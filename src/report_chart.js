@@ -166,4 +166,45 @@ function heatmapSVG(matrix, opts = {}) {
   return s;
 }
 
-module.exports = { equityCurveSVG, drawdownSVG, efficientFrontierSVG, heatmapSVG };
+// ============================================================
+// 多序列折线图 (用于元参数/指标随折叠演化)
+//   series: [{ label, color, points: number[] }]  (X 自动 = 索引)
+//   opts: { title, yLabel, yMin, yMax }
+// ============================================================
+function lineChartSVG(series, opts = {}) {
+  const { w = 720, h = 300, pad = { l: 48, r: 16, t: 26, b: 34 }, title = '演化曲线' } = opts;
+  if (!series || !series.length || !series[0].points.length) return '';
+  const n = series[0].points.length;
+  const all = series.flatMap((s) => s.points);
+  let ylo = opts.yMin != null ? opts.yMin : Math.min(...all);
+  let yhi = opts.yMax != null ? opts.yMax : Math.max(...all);
+  if (ylo === yhi) { ylo -= 0.1; yhi += 0.1; }
+  const span = (yhi - ylo) || 1e-6;
+  const x0 = pad.l, x1 = w - pad.r, y0 = pad.t, y1 = h - pad.b;
+  const X = (i) => x0 + (i / (n - 1)) * (x1 - x0);
+  const Y = (v) => y1 - ((v - ylo) / span) * (y1 - y0);
+  let s = svgHeader(w, h) + `<text x="${pad.l}" y="16" fill="${COL.text}" font-weight="bold">${title}</text>`;
+  for (let k = 0; k <= 4; k++) {
+    const v = ylo + (span * k) / 4, y = Y(v);
+    s += `<line x1="${x0}" y1="${y.toFixed(1)}" x2="${x1}" y2="${y.toFixed(1)}" stroke="${COL.grid}"/>`;
+    s += `<text x="${x0 - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" fill="${COL.text}">${v.toFixed(2)}</text>`;
+  }
+  for (const ser of series) {
+    const col = ser.color || COL.line;
+    let d = '';
+    ser.points.forEach((v, i) => { d += (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1) + ' '; });
+    s += `<path d="${d}" fill="none" stroke="${col}" stroke-width="1.8"/>`;
+  }
+  // 图例
+  let lx = x0 + 4;
+  for (const ser of series) {
+    const col = ser.color || COL.line;
+    s += `<rect x="${lx}" y="${y1 + 6}" width="10" height="10" fill="${col}"/>`;
+    s += `<text x="${lx + 14}" y="${y1 + 15}" fill="${COL.text}" font-size="10">${ser.label}</text>`;
+    lx += 22 + ser.label.length * 7;
+  }
+  s += `</svg>`;
+  return s;
+}
+
+module.exports = { equityCurveSVG, drawdownSVG, efficientFrontierSVG, heatmapSVG, lineChartSVG };

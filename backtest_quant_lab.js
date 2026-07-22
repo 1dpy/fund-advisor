@@ -87,7 +87,13 @@ function genSeries(seed, drift, vol, n) {
   // 前向填充对齐
   const masterSet = new Set();
   for (const c of codes) series[c].navs.forEach((n) => masterSet.add(n.date));
-  const commonDates = [...masterSet].sort();
+  // 日期排序: 合成数据用 "D<num>" 需按数字排序(否则字典序 D10<D2 会打乱时序);
+  // 真实数据用 ISO "YYYY-MM-DD" 字典序即可。
+  const commonDates = [...masterSet].sort((a, b) => {
+    const ma = a.match(/^D(\d+)$/), mb = b.match(/^D(\d+)$/);
+    if (ma && mb) return (+ma[1]) - (+mb[1]);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
   const closesByCode = {};
   for (const c of codes) {
     const map = {}; series[c].navs.forEach((n) => (map[n.date] = n.nav));

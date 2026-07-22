@@ -47,6 +47,10 @@ jobs:
         continue-on-error: true
         run: node backtest_quant_lab.js --demo
 
+      - name: 自我迭代验证 + 更长数据测试集 (合成数据兜底, 离线可跑)
+        continue-on-error: true
+        run: node backtest_self_iterate.js --demo
+
       - name: 上传回测报告 (HTML)
         if: always()
         uses: actions/upload-artifact@v4

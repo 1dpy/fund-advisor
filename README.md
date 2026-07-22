@@ -38,11 +38,21 @@
 - **LLM 多 Agent 多空辩论** `llm_report.multiAgentDebate`：看多 / 中性 / 看空三个 Agent 并行论证，再由裁判综合——比单一 LLM 叙述更能暴露风险与盲点（环境门控，无密钥自动跳过）。
 - **决策可解释归因** `src/decision_explain.js`：把每笔买卖归因于具体因子贡献（动量 / 估值 / 情绪各多少），生成人话说明，可推送钉钉 / 喂给 LLM 解读。
 
+### P3 — 自我迭代元优化（在线学习 · 概念漂移应对）
+- **自我迭代元优化器** `src/self_tuning.js`：回答"模型能否在训练+测试后自我迭代"。做法严守防过拟合红线，分两层参数：
+  - **底层因子权重**：每折只在训练窗内拟合、测试窗真样本外持有，**测试窗数据绝不回灌重拟合**；
+  - **元参数（正则化 λ）**：用"训练窗夏普 − 测试窗夏普"的**过拟合降级 Δ** 在线调整 λ —— Δ 持续偏高→λ 上升→下折偏好更均衡/分散的参数（不易过拟合），Δ 低→λ 回落放开。这是 **online meta-learning**：调的是目标函数，不碰测试集本身（参考 López de Prado + 自适应正则化）。
+  - **滚动扩展窗口**：每折结束把该折测试窗并入下一折训练窗 → 模型随数据累积"长大"，且每个新测试窗在生成时仍是未来数据（**真正的自我迭代、零泄题**）。
+  - **最终测试集 holdout**：历史最后一段被**永久冻结**，不参与任何训练，仅作模型成败的最终 OOS 证据——即"用更多数据当测试集"。
+- 验证：拉取约 365 日多 regime 净值（失败回退合成），在更长数据上复跑 7 策略 + 自我迭代，输出含元参数演化曲线 / 降级Δ轨迹 / holdout 权益对比的 HTML 报告（`backtest_self_iterate.js`）。
+
 运行量化实验室（自动出 HTML 报告，联网优先、失败回退合成数据）：
 ```bash
 npm run quant:lab          # 联网回测 (东方财富净值)
 npm run quant:lab:demo     # 离线合成数据演示 (CI 友好)
-npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA)
+npm run quant:self         # 联网 + 自我迭代 + 更长数据测试集
+npm run quant:self:demo    # 离线合成数据演示自我迭代 (CI 友好)
+npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA/自我迭代)
 ```
 
 ---
@@ -58,6 +68,7 @@ npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA)
 | 多因子库 | 自研 `src/factor_library.js`：动量 / 估值（净值历史分位代理）/ 情绪 三大类因子，截面 z-score 标准化 + 加权合成 |
 | 严格回测 | 自研 `src/walk_forward_pro.js`：折叠式 walk-forward 防前视 + **过拟合退化度检测**；`backtest_quant_lab.js` 产出综合报告 |
 | 敏感性分析 | 自研 `src/sensitivity_heatmap.js` + `report_chart.heatmapSVG`：参数网格回测 → 收益热力图 |
+| 自我迭代元优化 | 自研 `src/self_tuning.js`：在线元正则化（按过拟合降级 Δ 调 λ）+ 滚动扩展窗口 + 冻结 holdout 测试集（online meta-learning） |
 | 新闻舆情 / 归因 | 自研 `src/news_sentiment.js`（词典型舆情因子）、`src/decision_explain.js`（决策可解释归因） |
 | 成本模型 | 自研 `src/cost_model.js`：C 类基金赎回费阶梯 + 销售服务费 |
 | 可视化 | 自研 `src/report_chart.js`：零依赖 SVG 权益曲线 / 回撤 / 有效前沿 |
@@ -85,6 +96,7 @@ stock-fund-advisor/
 │   ├── report_chart.js        # 零依赖 SVG 可视化 (权益曲线/回撤/有效前沿/热力图)
 │   ├── factor_library.js      # 多因子库: 动量/估值/情绪 + z-score + 加权合成
 │   ├── walk_forward_pro.js    # 严格 walk-forward + 过拟合退化度 + 阈值再平衡
+│   ├── self_tuning.js         # 自我迭代元优化 (在线正则化+滚动扩展+冻结holdout)
 │   ├── sensitivity_heatmap.js # 参数敏感性网格回测
 │   ├── news_sentiment.js      # 新闻舆情因子 (数值化)
 │   ├── decision_explain.js    # 决策可解释归因 (因子贡献→人话)
@@ -93,7 +105,8 @@ stock-fund-advisor/
 │   └── ...                    # 历史版本 advisor_v1~v6、解析器、报告器等
 ├── backtest_model_compare.js  # 多策略回测对比 (MPT/风险平价/等权/动量)
 ├── backtest_quant_lab.js      # 量化实验室: 因子模型+严格WF+敏感性热力图+阈值再平衡 (HTML报告)
-├── test/offline_quant.js      # 离线量化校验 (因子/WF/敏感性/EWMA)
+├── backtest_self_iterate.js   # 自我迭代验证+更长数据测试集 (HTML报告)
+├── test/offline_quant.js      # 离线量化校验 (因子/WF/敏感性/EWMA/自我迭代)
 ├── holdings.example.json      # 持仓示例 (真实持仓不入库)
 └── package.json
 ```
@@ -164,7 +177,12 @@ flowchart LR
 ### 5. LLM 自然语言解读（`llm_report.js`，AI 方向）
 - 遵循 FinRobot 提出的 **"确定性计算 + LLM 叙述分离"** 架构：仓位/买卖由代码保证可审计，解读由 LLM 生成，密钥仅走环境变量。
 
-> 上述方法让项目兼具 **AI 应用能力**（LLM / ML）与 **金融量化素养**（MPT / 风险预算 / 成本 / 严谨回测），契合"AI × 智慧治理 / 量化金融"交叉方向。
+### 6. 自我迭代元优化（在线元学习 · 概念漂移应对）
+- **两层参数分离**：底层因子权重（每折仅训练窗拟合、测试窗 OOS 持有，测试数据绝不回灌重拟合）；上层元正则化强度 $\lambda$（用退化度 $\Delta=\text{Sharpe}_{train}-\text{Sharpe}_{OOS}$ 在线更新，$\Delta$ 高→收紧、$\Delta$ 低→放开）。
+- **滚动扩展窗口**：每折测试窗并入下一折训练窗，模型随数据累积持续更新，且每个新测试窗在生成时仍为未来数据——**零前视的自我迭代**。
+- **冻结 holdout 测试集**：历史末端永久不参与训练，作为模型成败的最终证据；对应量化研究的"概念漂移（concept drift）"自适应思路，避免静态模型在 regime 切换时失效。
+
+> 上述方法让项目兼具 **AI 应用能力**（LLM / ML / 在线学习）与 **金融量化素养**（MPT / 风险预算 / 成本 / 严谨回测 / 防过拟合），契合"AI × 智慧治理 / 量化金融"交叉方向。
 
 ---
 

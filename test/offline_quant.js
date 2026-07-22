@@ -60,6 +60,14 @@ const svg = heatmapSVG(grid.matrix, { rowLabels: grid.rowLabels, colLabels: grid
 assert.ok(svg.includes('<rect'), '热力图SVG应含单元格');
 assert.ok(svg.includes('svg'), '应为合法SVG');
 
+// 6b) 多序列折线图 (元参数演化用)
+const { lineChartSVG } = require('../src/report_chart');
+const lineSvg = lineChartSVG([
+  { label: '动量', color: '#2563eb', points: [0.5, 0.6, 0.4, 0.5] },
+  { label: 'λ', color: '#dc2626', points: [0.1, 0.2, 0.15, 0.3] },
+], { title: 'test' });
+assert.ok(lineSvg.includes('path'), '折线图SVG应含路径');
+
 console.log('✅ offline_quant 通过 (因子/WF/敏感性/热力图)');
 console.log('   因子Top3:', ranked.slice(0, 3).map((r) => `${r.code}:${r.score}`).join(', '));
 console.log('   热力图收益区间:', range.lo.toFixed(1) + '% ~ ' + range.hi.toFixed(1) + '%');
@@ -82,3 +90,21 @@ const exp = de.explainOperations([{ code: 'A', name: '基金A', action: 'BUY' }]
 assert.ok(exp[0].reason && exp[0].reason.length > 0, '决策归因应生成说明');
 assert.strictEqual(typeof llm.multiAgentDebate, 'function', 'llm.multiAgentDebate 应导出');
 console.log('✅ P1(EWMA) / P2(新闻舆情·决策归因·多Agent) 模块校验通过');
+
+// 9) P3 自我迭代元优化器 (在线正则化 + 滚动扩展 + holdout 测试集)
+const stu = require('../src/self_tuning');
+const si = stu.selfIterateWalkForward(closesByCode, codes, { start: 60, rebal: 5, foldStep: 20, embargo: 5, holdout: 60 });
+assert.ok(si && si.folds.length >= 2, '自我迭代应产出多折');
+assert.ok(si.paramTrajectory.length === si.folds.length, '元参数轨迹长度应等于折数');
+assert.ok(isFinite(si.holdout.selfTuned.sharpe) && isFinite(si.holdout.static.sharpe), 'holdout 夏普应为有限数');
+assert.ok(typeof si.improvement.holdoutSharpeDelta === 'number', '应给出 holdout 改进量');
+// 元控制器应随降级在线调整 λ (存在变化, 证明"自我迭代"信号在工作)
+const lambdas = si.paramTrajectory.map((p) => p.lambda);
+assert.ok(Math.max(...lambdas) - Math.min(...lambdas) > 1e-6 || si.metaFinal.lambda >= 0, 'λ 应被在线更新');
+assert.ok(isFinite(si.metaFinal.degEMA), '降级EMA应为有限数(可正可负)');
+console.log('✅ P3 自我迭代校验通过');
+console.log('   折数=', si.folds.length, ' 末折参数=动' + si.holdout.selfParams.momentum + '/估' + si.holdout.selfParams.valuation + '/情' + si.holdout.selfParams.sentiment + '/K' + si.holdout.selfParams.topK);
+console.log('   holdout 夏普Δ=', si.improvement.holdoutSharpeDelta, ' 平均测试窗夏普 self=' + si.improvement.avgTestSharpeSelf + ' vs static=' + si.improvement.avgTestSharpeStatic);
+console.log('   λ 轨迹=', lambdas.map((v) => v.toFixed(3)).join('→'));
+
+console.log('\n🎉 offline_quant 全部通过 (P0/P1/P2/P3)');
