@@ -51,6 +51,10 @@ jobs:
         continue-on-error: true
         run: node backtest_self_iterate.js --demo
 
+      - name: 仪表盘模块加载 + 离线数据 API (合成数据, 不启动监听)
+        continue-on-error: true
+        run: node -e "const s=require('./dashboard_server');Promise.all([s.portfolioData(),s.factorsData('demo'),s.backtestData('demo'),s.selfIterateData('demo')]).then(d=>console.log('✅ 仪表盘数据 API 可用: 因子'+d[1].universe.length+' 策略'+d[2].strategies.length+' 折'+(d[3].folds?d[3].folds.length:'-'))).catch(e=>{console.error('❌',e);process.exit(1)})"
+
       - name: 上传回测报告 (HTML)
         if: always()
         uses: actions/upload-artifact@v4

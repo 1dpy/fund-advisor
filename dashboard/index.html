@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>基金量化仪表盘 · stock-fund-advisor</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/vendor/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">📊</span>
+      <div>
+        <h1>基金量化仪表盘</h1>
+        <p class="sub">AI × 量化金融 · 多因子 / 严格回测 / 自我迭代 · 可视化界面</p>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="seg" id="modeSeg">
+        <button data-mode="demo" class="active">合成数据(离线)</button>
+        <button data-mode="live">实盘净值</button>
+      </div>
+      <button id="refreshBtn" class="btn-refresh">↻ 刷新</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="active">概览 · 持仓</button>
+    <button data-tab="factors">因子热力图</button>
+    <button data-tab="backtest">回测对比</button>
+    <button data-tab="selfiterate">自我迭代</button>
+  </nav>
+
+  <main>
+    <div id="status" class="status"></div>
+
+    <!-- 概览 -->
+    <section id="overview" class="tabpane active">
+      <div class="cards" id="ovCards"></div>
+      <div class="grid2">
+        <div class="card"><h3>资产配置</h3><div class="chart-wrap"><canvas id="allocChart"></canvas></div></div>
+        <div class="card"><h3>各持仓盈亏 <span class="hint">红涨绿跌</span></h3><div class="chart-wrap"><canvas id="pnlChart"></canvas></div></div>
+      </div>
+      <div class="card"><h3>持仓明细</h3><div id="posTable"></div></div>
+    </section>
+
+    <!-- 因子 -->
+    <section id="factors" class="tabpane">
+      <div class="card"><h3>综合 alpha 排名 <span class="hint" id="facMeta"></span></h3><div class="chart-wrap"><canvas id="factorBar"></canvas></div></div>
+      <div class="card"><h3>截面 z-score 热力图 <span class="hint">红=正向暴露强 / 绿=反向 / 越深越强</span></h3><div id="heatmap"></div></div>
+    </section>
+
+    <!-- 回测 -->
+    <section id="backtest" class="tabpane">
+      <div class="card"><h3>策略权益曲线 <span class="hint">净值起点=1 · 已计成本</span></h3><div class="chart-wrap tall"><canvas id="eqChart"></canvas></div></div>
+      <div class="card"><h3>收益 / 夏普 / 回撤</h3><div class="chart-wrap"><canvas id="btBar"></canvas></div></div>
+      <div class="card"><h3>策略对比表</h3><div id="btTable"></div></div>
+    </section>
+
+    <!-- 自我迭代 -->
+    <section id="selfiterate" class="tabpane">
+      <div class="card"><h3>元参数随折叠演化 <span class="hint">动量/估值/情绪权重 + λ正则</span></h3><div class="chart-wrap"><canvas id="evoChart"></canvas></div></div>
+      <div class="grid2">
+        <div class="card"><h3>过拟合降级 Δ</h3><div class="chart-wrap"><canvas id="degChart"></canvas></div></div>
+        <div class="card"><h3>holdout 权益曲线 <span class="hint">self-tuned vs 固定默认</span></h3><div class="chart-wrap"><canvas id="hoChart"></canvas></div></div>
+      </div>
+      <div class="card"><h3>自我迭代折表</h3><div id="foldTable"></div></div>
+      <div class="card" id="verdictCard"><h3>结论</h3><div id="verdict"></div></div>
+    </section>
+  </main>
+
+  <footer class="foot">数据基于历史净值，合成数据仅供演示，不构成投资建议 · Powered by stock-fund-advisor V6</footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

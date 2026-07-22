@@ -9,6 +9,44 @@
     "buyDate": "2026-01-01",
     "currentValue": 4000,
     "holdingReturn": 0,
-    "notes": "示例持仓: 初始现金 ¥4000, 首次运行请复制为 holdings.json"
+    "notes": "示例持仓: 初始现金 ¥4000, 首次运行请复制为 holdings.json 并填入真实持仓"
+  },
+  {
+    "code": "014418",
+    "name": "黄金ETF联接C",
+    "type": "fund",
+    "buyPrice": 1.5200,
+    "shares": 2600,
+    "costBasis": 3952,
+    "buyDate": "2026-02-10",
+    "currentValue": 4212,
+    "holdingReturn": 6.6,
+    "notes": "防御仓 · 示例"
+  },
+  {
+    "code": "021277",
+    "name": "广发全球精选C",
+    "type": "fund",
+    "buyPrice": 1.8300,
+    "shares": 2200,
+    "costBasis": 4026,
+    "buyDate": "2026-02-12",
+    "currentValue": 4510,
+    "holdingReturn": 12.0,
+    "locked": true,
+    "lockReason": "压舱石 · 永远不动",
+    "notes": "压舱石 · 示例"
+  },
+  {
+    "code": "019018",
+    "name": "易方达信息产业C",
+    "type": "fund",
+    "buyPrice": 2.6500,
+    "shares": 1500,
+    "costBasis": 3975,
+    "buyDate": "2026-03-01",
+    "currentValue": 4305,
+    "holdingReturn": 8.3,
+    "notes": "科技主线 · 示例"
   }
 ]

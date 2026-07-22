@@ -55,6 +55,22 @@ npm run quant:self:demo    # 离线合成数据演示自我迭代 (CI 友好)
 npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA/自我迭代)
 ```
 
+### P4 — 本地可视化仪表盘（Web Dashboard）
+- **零依赖本地服务** `dashboard_server.js`（Node 内置 `http`，无需 Express）：把持仓账本 / 因子热力图 / 回测对比 / 自我迭代 四个维度，做成浏览器里可交互的仪表盘，复试可现场演示。
+- **四个标签页**：
+  1. **概览 · 持仓**：读 `holdings.json` 算总资产 / 盈亏 / 权重，资产配置环形图 + 各持仓盈亏柱图（红涨绿跌）+ 明细表。
+  2. **因子热力图**：因子库快照——综合 alpha 排名 + 截面 z-score 热力网格（红=正向强 / 绿=反向强）。
+  3. **回测对比**：7–8 策略权益曲线（Chart.js 交互）+ 收益/夏普/回撤对比 + 策略表。
+  4. **自我迭代**：元参数演化曲线（动量/估值/情绪权重 + λ 正则）+ 过拟合降级 Δ 轨迹 + holdout 权益对比 + 折表 + 诚实结论。
+- **数据模式**：默认`合成数据(离线)`（确定性、秒开）；切到`实盘净值`即联网拉东方财富历史净值重算（失败安全降级）。
+- **图表库**：`dashboard/vendor/chart.umd.min.js`（Chart.js v4 已 vendored，离线可用，无需 CDN）。
+
+启动仪表盘（默认 http://localhost:8787，可用 `PORT=9000` 改端口）：
+```bash
+npm run ui                  # 启动本地仪表盘, 浏览器打开 http://localhost:8787
+```
+
+
 ---
 
 ## 🛠 技术栈
@@ -71,7 +87,7 @@ npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA/自
 | 自我迭代元优化 | 自研 `src/self_tuning.js`：在线元正则化（按过拟合降级 Δ 调 λ）+ 滚动扩展窗口 + 冻结 holdout 测试集（online meta-learning） |
 | 新闻舆情 / 归因 | 自研 `src/news_sentiment.js`（词典型舆情因子）、`src/decision_explain.js`（决策可解释归因） |
 | 成本模型 | 自研 `src/cost_model.js`：C 类基金赎回费阶梯 + 销售服务费 |
-| 可视化 | 自研 `src/report_chart.js`：零依赖 SVG 权益曲线 / 回撤 / 有效前沿 |
+| 可视化 | 自研 `src/report_chart.js`（零依赖 SVG 权益曲线/回撤/有效前沿/热力图）+ `dashboard_server.js`（零依赖本地 Web 仪表盘，Chart.js 渲染交互图表） |
 | LLM 解读 | 自研 `src/llm_report.js`：OpenAI 兼容接口（DeepSeek / 通义等），环境变量注入密钥 |
 | 数据源 | 东方财富（历史净值）、同花顺（盘中估值）、新浪 / 腾讯（指数行情） |
 | 通知 | 钉钉机器人（webhook 经环境变量注入） |
@@ -106,6 +122,8 @@ stock-fund-advisor/
 ├── backtest_model_compare.js  # 多策略回测对比 (MPT/风险平价/等权/动量)
 ├── backtest_quant_lab.js      # 量化实验室: 因子模型+严格WF+敏感性热力图+阈值再平衡 (HTML报告)
 ├── backtest_self_iterate.js   # 自我迭代验证+更长数据测试集 (HTML报告)
+├── dashboard_server.js        # 零依赖本地 Web 仪表盘 (持仓/因子/回测/自我迭代, Chart.js)
+├── dashboard/                 # 仪表盘前端: index.html + app.js + style.css + vendor/chart.umd.min.js
 ├── test/offline_quant.js      # 离线量化校验 (因子/WF/敏感性/EWMA/自我迭代)
 ├── holdings.example.json      # 持仓示例 (真实持仓不入库)
 └── package.json
