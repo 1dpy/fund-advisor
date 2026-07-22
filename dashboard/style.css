@@ -88,3 +88,27 @@ tr:hover td { background: #f8fafc; }
   .cards { grid-template-columns: repeat(2, 1fr); }
   .grid2 { grid-template-columns: 1fr; }
 }
+
+/* ---------- 持仓截图上传器 ---------- */
+.uploader .up-drop {
+  border: 2px dashed var(--line); border-radius: 12px; padding: 22px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; background: #f8fafc; transition: .15s;
+}
+.uploader .up-drop.drag { border-color: var(--brand); background: #eff6ff; }
+.uploader .btn-up { border: 0; background: var(--brand); color: #fff; padding: 9px 18px; border-radius: 9px; cursor: pointer; font-size: 14px; }
+.uploader .btn-up:hover { filter: brightness(1.05); }
+.uploader .up-tip { color: var(--muted); font-size: 12px; }
+.uploader .up-status { margin: 10px 0; font-size: 13px; color: var(--muted); min-height: 18px; }
+.uploader .up-status.err { color: var(--up); white-space: pre-wrap; }
+.uploader .up-preview { margin-top: 8px; }
+.uploader .up-raw { display: none; white-space: pre-wrap; max-height: 160px; overflow: auto; background: #0f172a; color: #e2e8f0; font-size: 11px; padding: 10px; border-radius: 8px; margin-bottom: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.uploader #upCand { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+.uploader #upCand th, .uploader #upCand td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; font-size: 13px; }
+.uploader #upCand input, .uploader #upCand select { width: 100%; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.uploader #upCand .ci-name { min-width: 200px; }
+.uploader #upCand .ci-val, .uploader #upCand .ci-ret { width: 110px; }
+.uploader .ci-del { border: 0; background: transparent; color: var(--down); cursor: pointer; font-size: 15px; }
+.uploader .up-actions { display: flex; gap: 10px; }
+.uploader .btn-confirm { border: 0; background: var(--up); color: #fff; padding: 9px 16px; border-radius: 9px; cursor: pointer; font-size: 13px; }
+.uploader .btn-cancel { border: 1px solid var(--line); background: var(--card); padding: 9px 16px; border-radius: 9px; cursor: pointer; font-size: 13px; }
+.uploader .up-note { color: var(--muted); font-size: 12px; margin: 10px 0 0; }

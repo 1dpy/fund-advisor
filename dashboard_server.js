@@ -13,6 +13,8 @@
  *   GET /api/backtest?mode=    7 策略回测对比 (权益曲线/夏普/回撤/调仓)
  *   GET /api/selfiterate?mode= 自我迭代元优化 (折表/元参数演化/holdout 曲线)
  *   GET /api/sectors?mode=     当日实时赛道综合得分 Top10 (实时抓取|确定性合成回退)
+ *   POST /api/holding-image    {image:dataURL} → 存盘 + OCR(tesseract.js, 可选) → 候选
+ *   POST /api/holding-confirm  {holdings:[...]} → 核对后写入 holdings.json (保留锁定约定)
  * 所有计算经 src/quant_lab_core.js, 失败安全降级为合成数据; 结果内存缓存复用。
  */
 
@@ -24,7 +26,21 @@ const core = require('./src/quant_lab_core');
 const PORT = process.env.PORT || 8787;
 const ROOT = __dirname;
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
+const UPLOAD_DIR = path.join(ROOT, 'data', 'uploads');
+const HOLDINGS_FILE = path.join(ROOT, 'holdings.json');
+try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); } catch (e) {}
 const { START, REBAL, WINDOW, DAYS, HOLDOUT } = core.DEFAULTS;
+
+// 已知基金名 → 代码 / 锁定约定 (用户框架: 广发压舱石 / 易方达减仓后持有)
+const NAME_CODE_MAP = [
+  { re: /广发全球|全球精选/, code: '021277', locked: true, lockReason: '压舱石' },
+  { re: /易方达信息产业/, code: '019018', locked: true, lockReason: '已减仓, 持有不动(仅科创50破5日线放量才减)' },
+  { re: /余额宝|零钱通|活期|货币/, code: 'CASH_YEB', locked: false, lockReason: '' },
+];
+function deriveCode(name, idx) {
+  for (const m of NAME_CODE_MAP) if (m.re.test(name || '')) return m;
+  return { code: 'IMG_' + (idx + 1), locked: false, lockReason: '' };
+}
 
 // ---------- 内存缓存 (带 in-flight 去重, 避免并发重复计算) ----------
 const cache = {};
@@ -122,6 +138,91 @@ async function selfIterateData(mode) {
   return { mode: prep.dataMode, nDays: prep.N, holdout: HOLDOUT, ...si };
 }
 
+// ---------- 持仓截图上传 / 确认 ----------
+// 读取 POST body (JSON, 限制 12MB)
+function readBody(req, maxBytes = 12 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > maxBytes) { reject(new Error('上传过大')); req.destroy(); return; }
+      buf += c;
+    });
+    req.on('end', () => { try { resolve(buf ? JSON.parse(buf) : {}); } catch (e) { reject(new Error('JSON 解析失败')); } });
+    req.on('error', reject);
+  });
+}
+
+// 1) 接收 base64 图片 → 存盘 → OCR → 返回候选 (供前端核对)
+async function holdingImageData(imageDataUrl, fileName) {
+  // 解析 dataURL: data:image/png;base64,xxxx
+  const m = /^data:(image\/\w+);base64,(.+)$/.exec(imageDataUrl || '');
+  if (!m) throw new Error('图片格式应为 dataURL (base64)');
+  const ext = m[1].split('/')[1] || 'png';
+  const base64 = m[2];
+  const stamp = Date.now().toString(36);
+  const safe = (fileName || 'shot').replace(/[^a-zA-Z0-9_\u4e00-\u9fa5.-]/g, '_').slice(0, 40);
+  const imgPath = path.join(UPLOAD_DIR, `${stamp}_${safe}.${ext}`);
+  fs.writeFileSync(imgPath, Buffer.from(base64, 'base64'));
+
+  let result;
+  try {
+    const parser = require('./src/holding_image_parser');
+    result = await parser.parseHoldingImage(imgPath);
+  } catch (e) {
+    if (e.code === 'NO_OCR') {
+      return { ok: false, needOcr: true, hint: e.message, imageSaved: imgPath, rawText: '' };
+    }
+    throw e;
+  }
+  return { ok: true, needOcr: false, imageSaved: imgPath, engine: result.engine, rawText: result.rawText, candidates: result.candidates };
+}
+
+// 2) 用户核对后确认 → 写 holdings.json (保留锁定约定, 反推成本)
+function confirmHoldingData(payload) {
+  const list = Array.isArray(payload) ? payload : (payload && payload.holdings) || [];
+  if (!Array.isArray(list) || !list.length) throw new Error('候选为空');
+
+  // 保留上一版(用于沿用 costBasis / buyDate / 备注, 仅当同一 code)
+  let prev = [];
+  try { prev = JSON.parse(fs.readFileSync(HOLDINGS_FILE, 'utf8')); } catch (e) {}
+  const prevByCode = {};
+  prev.forEach((h) => (prevByCode[h.code] = h));
+
+  const out = list.map((it, i) => {
+    const name = String(it.name || '').trim();
+    const type = it.type === 'cash' ? 'cash' : 'fund';
+    const currentValue = Math.max(0, Number(it.currentValue) || 0);
+    const holdingReturn = Number(it.holdingReturn) || 0;
+    const info = deriveCode(name, i);
+    const prevH = prevByCode[info.code];
+    const costBasis = prevH && prevH.costBasis != null ? prevH.costBasis : Math.round((currentValue - holdingReturn) * 100) / 100;
+    return {
+      code: info.code,
+      name: name || (type === 'cash' ? '余额宝(现金)' : info.code),
+      type,
+      buyDate: prevH && prevH.buyDate ? prevH.buyDate : new Date().toISOString().slice(0, 10),
+      buyPrice: costBasis,
+      shares: 1,
+      costBasis,
+      currentValue: Math.round(currentValue * 100) / 100,
+      holdingReturn: Math.round(holdingReturn * 100) / 100,
+      holdingReturnPct: costBasis ? Math.round((holdingReturn / costBasis) * 10000) / 100 : 0,
+      locked: !!info.locked || !!prevH,
+      lockReason: info.lockReason || (prevH && prevH.lockReason) || '',
+      notes: (prevH && prevH.notes ? prevH.notes + ' | ' : '') + '截图回报 ' + new Date().toISOString().slice(0, 10),
+    };
+  });
+
+  // 备份再写
+  try { fs.copyFileSync(HOLDINGS_FILE, HOLDINGS_FILE + '.bak.' + Date.now()); } catch (e) {}
+  fs.writeFileSync(HOLDINGS_FILE, JSON.stringify(out, null, 2));
+  // 清缓存
+  cache.portfolio = { ts: 0, data: null, promise: null };
+  return { ok: true, count: out.length, holdings: out };
+}
+
 // ---------- 实时赛道综合得分 (Top10) ----------
 // 字符串→32位种子 (FNV-1a)
 function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
@@ -207,6 +308,22 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
   try {
+    // ---- POST: 持仓截图上传 / 确认 ----
+    if (req.method === 'POST') {
+      if (p === '/api/holding-image') {
+        const body = await readBody(req);
+        const r = await holdingImageData(body.image, body.fileName);
+        return sendJSON(res, r);
+      }
+      if (p === '/api/holding-confirm') {
+        const body = await readBody(req);
+        const r = confirmHoldingData(body);
+        return sendJSON(res, r);
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: '未知 POST 接口' }));
+    }
+
     if (p === '/api/portfolio') return sendJSON(res, await getCached('portfolio', 30000, portfolioData));
     if (p === '/api/factors') {
       const mode = url.searchParams.get('mode') === 'live' ? 'live' : 'demo';
@@ -243,4 +360,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { server, portfolioData, factorsData, backtestData, selfIterateData, sectorsData };
+module.exports = { server, portfolioData, factorsData, backtestData, selfIterateData, sectorsData, holdingImageData, confirmHoldingData };

@@ -281,6 +281,97 @@
   });
   document.getElementById('refreshBtn').addEventListener('click', loadTab);
 
+  // ---------- 持仓截图上传 / 确认 ----------
+  (function uploader() {
+    var drop = $('upDrop'), file = $('upFile'), pick = $('upPick'), status = $('upStatus');
+    var preview = $('upPreview'), raw = $('upRaw'), candBody = $('upCand').querySelector('tbody');
+    var confirmBtn = $('upConfirm'), cancelBtn = $('upCancel');
+    var pending = null; // 待确认候选
+
+    function setStatus(msg, isErr) { status.textContent = msg || ''; status.className = 'up-status' + (isErr ? ' err' : ''); }
+
+    function readAsDataURL(f) {
+      return new Promise(function (res, rej) {
+        var r = new FileReader();
+        r.onload = function () { res(r.result); };
+        r.onerror = function () { rej(new Error('读取失败')); };
+        r.readAsDataURL(f);
+      });
+    }
+
+    async function handleFile(f) {
+      if (!f) return;
+      if (!/^image\//.test(f.type)) { setStatus('请选择图片文件', true); return; }
+      setStatus('上传并识别中 (首次 OCR 需下载语言包, 稍候)...');
+      preview.style.display = 'none';
+      try {
+        var dataUrl = await readAsDataURL(f);
+        var resp = await fetch('/api/holding-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUrl, fileName: f.name })
+        }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+
+        if (resp.needOcr) {
+          setStatus('⚠️ 未安装 OCR 引擎: ' + resp.hint, true);
+          return;
+        }
+        pending = resp.candidates || [];
+        // 渲染候选
+        candBody.innerHTML = pending.map(function (c, i) {
+          var type = c.type === 'cash' ? 'cash' : 'fund';
+          return '<tr data-i="' + i + '">' +
+            '<td><input class="ci-name" value="' + (c.name || '').replace(/"/g, '&quot;') + '"></td>' +
+            '<td><select class="ci-type"><option value="fund"' + (type === 'fund' ? ' selected' : '') + '>基金</option><option value="cash"' + (type === 'cash' ? ' selected' : '') + '>现金</option></select></td>' +
+            '<td><input class="ci-val" type="number" step="0.01" value="' + (c.currentValue || 0) + '"></td>' +
+            '<td><input class="ci-ret" type="number" step="0.01" value="' + (c.holdingReturn || 0) + '"></td>' +
+            '<td><button class="ci-del">✕</button></td></tr>';
+        }).join('');
+        raw.textContent = 'OCR 原文:\n' + (resp.rawText || '(空)');
+        raw.style.display = pending.length ? 'block' : 'none';
+        preview.style.display = 'block';
+        setStatus('识别到 ' + pending.length + ' 项, 请核对后确认' + (pending.length ? '' : ' (可手动在下方添加)'));
+      } catch (e) {
+        setStatus('识别失败: ' + e.message + ' ｜ 也可直接把截图发给 AI 助手', true);
+      }
+    }
+
+    pick.addEventListener('click', function () { file.click(); });
+    drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('drag'); });
+    drop.addEventListener('dragleave', function () { drop.classList.remove('drag'); });
+    drop.addEventListener('drop', function (e) { e.preventDefault(); drop.classList.remove('drag'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    file.addEventListener('change', function () { if (file.files[0]) handleFile(file.files[0]); });
+
+    cancelBtn.addEventListener('click', function () { preview.style.display = 'none'; pending = null; setStatus(''); });
+
+    confirmBtn.addEventListener('click', async function () {
+      if (!pending) return;
+      var rows = [].slice.call(candBody.querySelectorAll('tr'));
+      var holdings = rows.map(function (tr) {
+        return {
+          name: tr.querySelector('.ci-name').value.trim(),
+          type: tr.querySelector('.ci-type').value,
+          currentValue: parseFloat(tr.querySelector('.ci-val').value) || 0,
+          holdingReturn: parseFloat(tr.querySelector('.ci-ret').value) || 0,
+        };
+      }).filter(function (h) { return h.name; });
+      if (!holdings.length) { setStatus('没有有效持仓项', true); return; }
+      setStatus('写入持仓中...');
+      try {
+        var r = await fetch('/api/holding-confirm', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ holdings: holdings })
+        }).then(function (x) { if (!x.ok) throw new Error('HTTP ' + x.status); return x.json(); });
+        setStatus('✅ 已更新 ' + r.count + ' 项持仓, 刷新概览查看');
+        preview.style.display = 'none';
+        pending = null;
+        loadTab(); // 重新加载概览
+      } catch (e) {
+        setStatus('写入失败: ' + e.message, true);
+      }
+    });
+  })();
+
   // 初始
   loadTab();
 })();

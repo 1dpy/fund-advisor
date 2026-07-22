@@ -21,6 +21,7 @@
     "quant:self:demo": "node backtest_self_iterate.js --demo",
     "ui": "node dashboard_server.js",
     "quant:ui": "node dashboard_server.js",
+    "ui:ocr": "npm install tesseract.js && node dashboard_server.js",
     "self:iterate": "node src/continual_self_iterate.js",
     "live": "node scripts/live_snapshot.js",
     "smoke": "node test/smoke.js"

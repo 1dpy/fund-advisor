@@ -44,6 +44,24 @@
         <div class="card"><h3>各持仓盈亏 <span class="hint">红涨绿跌</span></h3><div class="chart-wrap"><canvas id="pnlChart"></canvas></div></div>
       </div>
       <div class="card"><h3>持仓明细</h3><div id="posTable"></div></div>
+      <div class="card uploader">
+        <h3>📷 上传持仓截图更新 <span class="hint">把支付宝/天天基金截图拖进来, 自动识别后核对确认</span></h3>
+        <div class="up-drop" id="upDrop">
+          <input type="file" id="upFile" accept="image/*" hidden />
+          <button class="btn-up" id="upPick">选择图片 / 点此上传</button>
+          <span class="up-tip">支持 PNG / JPG · 自动 OCR 中文</span>
+        </div>
+        <div class="up-status" id="upStatus"></div>
+        <div class="up-preview" id="upPreview" style="display:none">
+          <div class="up-raw" id="upRaw"></div>
+          <table id="upCand"><thead><tr><th>基金/账户</th><th>类型</th><th>持有金额(¥)</th><th>持有收益(¥)</th><th></th></tr></thead><tbody></tbody></table>
+          <div class="up-actions">
+            <button class="btn-confirm" id="upConfirm">✅ 核对无误, 更新持仓</button>
+            <button class="btn-cancel" id="upCancel">✎ 重选</button>
+          </div>
+          <p class="up-note">⚠️ 识别仅供参考, 请逐行核对金额; 不准可手动改。识别失败也可直接把截图发给 AI 助手(读图更准)。</p>
+        </div>
+      </div>
     </section>
 
     <!-- 因子 -->
