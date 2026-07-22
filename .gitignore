@@ -16,6 +16,8 @@ reports/
 
 # 本地真实持仓(含个人隐私金额), 用 holdings.example.json 作模板
 holdings.json
+holdings.json.bak.*
+data/uploads/
 
 # 环境变量 / 密钥
 .env
