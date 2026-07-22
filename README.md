@@ -71,6 +71,8 @@ npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA/自
 npm run ui                  # 启动本地仪表盘, 浏览器打开 http://localhost:8787
 ```
 
+> **让 AI agent 读取同花顺实时估值**：agent 的沙箱无法直连同花顺/东财估值接口（网络出口受限），需在本机桥接——运行 `npm run live`（即 `node scripts/live_snapshot.js`），本机抓取同花顺/东财基金盘中估值写入 `data/live_snapshot.json`（已 gitignore），agent 再读取分析。ETF/股票实时成交价可直接经 westock MCP 连接器获取（不依赖本机桥接）。
+
 ### P5 — 持续自我迭代（实时数据 + 历史数据结合）
 - **用户要求**：每次运行都要自我迭代，把"实时更新的数据"和"以往的数据"结合起来。
 - **引擎** `src/continual_self_iterate.js`：
