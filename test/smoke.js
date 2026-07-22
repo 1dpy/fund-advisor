@@ -32,18 +32,18 @@ const advice = generateUltimatePortfolioAdvice(null, null, fakeScores);
 
 assert.ok(Array.isArray(advice.operations), 'operations 应为数组');
 assert.ok(Array.isArray(advice.realtimePicks), 'realtimePicks 应为数组');
-assert.strictEqual(advice.realtimePicks.length, 4,
-  '应动态挑选当日最强 4 只, 实际=' + advice.realtimePicks.length);
+assert.strictEqual(advice.realtimePicks.length, 2,
+  '应动态挑选当日最强 2 只 (自迭代 topK=2), 实际=' + advice.realtimePicks.length);
 
-// 验证挑出的确实是综合分最高的前 4 只（而非写死固定基金）
+// 验证挑出的确实是综合分最高的前 2 只（数据驱动 topK，非写死固定基金）
 const picked = advice.realtimePicks.map(p => p.code).sort();
-const expect = ['008282', '011609', '013402', '018503'].sort();
+const expect = ['011609', '013402'].sort();
 assert.deepStrictEqual(picked, expect,
-  '动态选基应取综合分 Top4 (半导体/科创/恒生科技/光伏)');
+  '动态选基应取综合分 Top2 (科创/恒生科技)');
 
 console.log('✅ smoke test 通过');
 console.log('   operations =', advice.operations.length);
-console.log('   realtimePicks(Top4) =', advice.realtimePicks.map(p => `${p.code}:${p.sector}`).join(', '));
+console.log('   realtimePicks(Top2) =', advice.realtimePicks.map(p => `${p.code}:${p.sector}`).join(', '));
 
 // 3) 新量化模块可加载且纯函数可用 (不联网)
 assert.strictEqual(typeof fl.compositeScore, 'function', 'factor_library.compositeScore 应导出');

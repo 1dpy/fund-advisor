@@ -53,7 +53,7 @@ jobs:
 
       - name: 仪表盘模块加载 + 离线数据 API (合成数据, 不启动监听)
         continue-on-error: true
-        run: node -e "const s=require('./dashboard_server');Promise.all([s.portfolioData(),s.factorsData('demo'),s.backtestData('demo'),s.selfIterateData('demo'),s.sectorsData('demo')]).then(d=>console.log('✅ 仪表盘数据 API 可用: 因子'+d[1].universe.length+' 策略'+d[2].strategies.length+' 折'+(d[3].folds?d[3].folds.length:'-')+' 实时赛道Top'+d[4].top.length+'/候选'+d[4].total)).catch(e=>{console.error('❌',e);process.exit(1)})"
+        run: node test/dashboard_load.js
 
       - name: 持续自我迭代 (实时+历史, 离线合成跑通)
         continue-on-error: true
