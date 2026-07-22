@@ -10,9 +10,13 @@
  *        - 备源: 东方财富 fundgz (自动跟随 302 重定向)
  *   2. 叠加【近期动量】(从 lsjz 历史净值算 近5日收益 + 相对MA10位置)
  *        - 该源沙箱/用户机都稳定可用, 作为估值抓不到时的兜底"强弱"信号
- *   3. 综合打分: score = 0.6*实时估值% + 0.25*近5日% + 0.15*均线偏离%
- *        - 估值缺失时自动归一化到动量(0.7*近5日 + 0.3*均线), 保证不空推
- *   4. 返回按 score 降序的数组, 供 advisor 取 Top-N 动态部署
+ *   3. 综合打分(赚钱优先·少追脉冲):
+ *        score = 0.75 * 持续性(mom5/maTrend) + 0.25 * 当日ETF实时涨跌%
+ *        - 以"持续性强势"为主(近5日动量60% + 均线偏离40%), 避免单纯追当日脉冲(追高被套)
+ *        - 当日ETF实时成交价仅作"入场时机/确认"(25%), 保证信号是活的、最新的
+ *        - 若有自我迭代元参数(动量/估值权重), 用其进一步微调持续性内部占比
+ *        - 估值缺失时回退到动量(0.7*近5日+0.3*均线), 保证不空推
+ *   4. 返回按 score 降序的数组, 供 advisor 取 Top-N 动态部署(取前 N 由自迭代 topK 决定)
  *
  * 健壮性: 单只失败不影响整体; 整批失败返回 null, advisor 自动回退到原固定策略。
  */
@@ -168,6 +172,8 @@ async function fetchEtfQuotes(codes) {
 // ============================================================
 async function fetchRealtimeSectorScores(opts = {}) {
   const { days = 12, delayMs = 120, metaWeights = null } = opts;
+  // 默认加载持续自我迭代产出的元参数(利润优化权重): 保证 dashboard / main / 自动化三处打分一致
+  const mw = metaWeights || loadMetaWeights();
   // 1) 赛道 -> ETF 代码 (去重)
   const sectorEtfs = {};
   for (const s of PREFERRED_SECTORS) sectorEtfs[s.sector] = SECTOR_ETF_MAP[s.sector] || [];
@@ -183,7 +189,7 @@ async function fetchRealtimeSectorScores(opts = {}) {
     const etfChange = etfVals.length ? Math.round(etfVals.reduce((a, b) => a + b.changePct, 0) / etfVals.length * 100) / 100 : null;
     const etfName = etfVals.length ? etfVals[0].name : '';
 
-    // 动量 (历史净值, 兜底强弱信号)
+    // 动量 (历史净值, 兜底强弱信号 + 持续性依据)
     let mom = { mom5: 0, maTrend: 0, available: false };
     const navs = await fetchNavHistory(s.code, days, true).catch(() => []);
     if (navs && navs.length) mom = calcMomentum(navs);
@@ -191,25 +197,30 @@ async function fetchRealtimeSectorScores(opts = {}) {
     // 基金盘中估值 (次兜底)
     const est = await fetchLiveEstimate(s.code).catch(() => null);
 
+    // —— 实时综合分 (赚钱优先 · 偏持续性强势, 少追当日脉冲) ——
+    // 持续性 = 近5日动量(动量因子) 与 均线偏离(估值/趋势因子) 的加权
+    //   若有元参数, 用其 动量/估值 权重细分; 估值权重过低(<15%)则回退稳健的 0.6/0.4, 防单因子过拟合
+    let persMom = 0.6, persVal = 0.4;
+    if (mw && (mw.momentum > 0 || mw.valuation > 0) && (mw.momentum + mw.valuation) > 0) {
+      const tot = mw.momentum + mw.valuation;
+      const ms = mw.momentum / tot, vs = mw.valuation / tot;
+      if (vs >= 0.15) { persMom = ms; persVal = vs; }
+    }
+    const persistence = (mom.available) ? (persMom * mom.mom5 + persVal * mom.maTrend) : null;
+
     let score, source;
-    if (etfChange != null && mom.available) {
-      // 若有元参数(持续自我迭代产出), 用其动量/估值权重重算综合分 (实时更新+历史结合的落地)
-      if (metaWeights && (metaWeights.momentum != null || metaWeights.valuation != null)) {
-        const m = metaWeights.momentum || 0, v = metaWeights.valuation || 0;
-        const s = m + v || 1;
-        score = (m / s) * (0.8 * etfChange + 0.2 * mom.mom5) + (v / s) * mom.maTrend;
-      } else {
-        score = 0.7 * etfChange + 0.2 * mom.mom5 + 0.1 * mom.maTrend;
-      }
-      source = 'etf' + (metaWeights ? '+meta' : '');
-    } else if (etfChange != null) {
-      score = etfChange; source = 'etf';
-    } else if (est && mom.available) {
-      score = 0.6 * est.changePct + 0.25 * mom.mom5 + 0.15 * mom.maTrend; source = 'estimate';
+    if (etfChange != null && persistence != null) {
+      // 持续性强势 75% + 当日ETF实时确认 25%
+      score = 0.75 * persistence + 0.25 * etfChange;
+      source = (mw ? 'etf+meta' : 'etf');
+    } else if (etfChange != null && persistence == null) {
+      score = etfChange; source = 'etf'; // 仅拿到实时成交价, 直接用它
+    } else if (etfChange == null && persistence != null) {
+      score = 0.7 * mom.mom5 + 0.3 * mom.maTrend; source = 'momentum'; // 实时缺失, 用持续性兜底
+    } else if (est && persistence != null) {
+      score = 0.75 * persistence + 0.25 * (est.changePct || 0); source = 'estimate';
     } else if (est) {
       score = est.changePct; source = 'estimate';
-    } else if (mom.available) {
-      score = 0.7 * mom.mom5 + 0.3 * mom.maTrend; source = 'momentum';
     } else {
       score = -999; source = 'none';
     }
