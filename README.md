@@ -50,6 +50,36 @@ stock-fund-advisor/
 
 **数据流**：实时行情 + 历史净值 → 情绪引擎 / ML 信号 → 决策引擎（风控 + 仓位 + 选基）→ 操作建议 → 钉钉推送。
 
+### 系统架构图
+
+```mermaid
+graph TD
+    A[实时行情 / 历史净值<br/>东方财富 · 同花顺] --> B[情绪引擎 + ML 信号]
+    B --> C[决策引擎 advisor_v5_ultimate<br/>PROFIT_FIRST 框架]
+    C --> D[动态选基 realtime_quotes<br/>综合分排序取 Top4]
+    C --> E[风控 + 仓位再平衡]
+    D --> F[操作建议单]
+    E --> F
+    F --> G[钉钉推送 dingtalk_v4]
+    F --> H[持仓管理 holdings.json]
+```
+
+### 策略决策流程图
+
+```mermaid
+flowchart LR
+    S[每日 14:30 触发] --> R[拉实时行情<br/>16只赛道盘中估值+动量]
+    R --> Q[综合分排序<br/>0.6×涨幅+0.25×动量+0.15×均线]
+    Q --> T[取 Top4 候选]
+    T --> C{仓位检查}
+    C -->|现金超配| B[买入 Top4 等权分散]
+    C -->|成长不足| U[补成长赛道]
+    C -->|整体偏空| G[转黄金防御]
+    B --> P[推送钉钉 + 写回持仓]
+    U --> P
+    G --> P
+```
+
 ---
 
 ## 🎯 核心策略
@@ -110,4 +140,6 @@ node main.js --ultimate --apply --ding # 应用建议到持仓并推送钉钉
 
 ## 📄 License
 
-ISC
+本项目基于 **MIT License** 开源，详见 [LICENSE](./LICENSE)。
+
+> 注：仓库内所有敏感信息（钉钉 webhook token、个人真实持仓金额）均已脱敏或排除，可安全公开。

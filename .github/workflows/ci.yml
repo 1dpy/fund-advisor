@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 语法检查 (所有 JS 文件)
+        run: |
+          fail=0
+          for f in $(find . -name "*.js" -not -path "./node_modules/*"); do
+            node --check "$f" || { echo "❌ 语法错误: $f"; fail=1; }
+          done
+          [ $fail -eq 0 ] && echo "✅ 全部 JS 语法通过"
+          exit $fail
+
+      - name: 准备示例持仓
+        run: cp holdings.example.json holdings.json
+
+      - name: 模块加载 + 离线冒烟测试
+        run: node test/smoke.js
+
+      - name: 多策略回测 (联网抓取, 允许失败)
+        continue-on-error: true
+        run: |
+          node backtest_model_compare.js 2>&1 | tail -25 || true
