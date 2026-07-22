@@ -21,6 +21,7 @@
     "quant:self:demo": "node backtest_self_iterate.js --demo",
     "ui": "node dashboard_server.js",
     "quant:ui": "node dashboard_server.js",
+    "self:iterate": "node src/continual_self_iterate.js",
     "smoke": "node test/smoke.js"
   },
   "keywords": ["stock", "fund", "a-share", "investment", "advisor", "robo-advisor", "quant", "factor-model", "multifactor", "markowitz", "mean-variance", "risk-parity", "ewma", "walk-forward", "portfolio-optimization", "backtest", "machine-learning", "sentiment", "explainable-ai", "self-tuning", "meta-learning", "online-learning", "overfitting"],

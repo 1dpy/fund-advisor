@@ -17,9 +17,20 @@
  * 健壮性: 单只失败不影响整体; 整批失败返回 null, advisor 自动回退到原固定策略。
  */
 
+const fs = require('fs');
 const https = require('https');
+const path = require('path');
 const { PREFERRED_SECTORS } = require('./config');
 const { fetchNavHistory } = require('./ml_sector_selector');
+
+const ROOT = path.join(__dirname, '..');
+const META_FILE = path.join(ROOT, 'data', 'meta_params.json');
+
+// 读取持续自我迭代产出的元参数(动量/估值/情绪权重), 用于实时综合分加权
+function loadMetaWeights() {
+  try { const m = JSON.parse(fs.readFileSync(META_FILE, 'utf8')); return m && m.selfParams ? m.selfParams : null; }
+  catch (e) { return null; }
+}
 
 // 赛道 → 对应 ETF (交易所真实成交价, 比基金盘中估值更实时更准)
 //   代码经 westock MCP 实测可用; 用户本机可直连腾讯/东财行情接口拉取
@@ -156,7 +167,7 @@ async function fetchEtfQuotes(codes) {
 //   数据源优先级: 赛道ETF实时成交价 > 基金盘中估值 > 历史动量 > -999(全失败)
 // ============================================================
 async function fetchRealtimeSectorScores(opts = {}) {
-  const { days = 12, delayMs = 120 } = opts;
+  const { days = 12, delayMs = 120, metaWeights = null } = opts;
   // 1) 赛道 -> ETF 代码 (去重)
   const sectorEtfs = {};
   for (const s of PREFERRED_SECTORS) sectorEtfs[s.sector] = SECTOR_ETF_MAP[s.sector] || [];
@@ -182,7 +193,15 @@ async function fetchRealtimeSectorScores(opts = {}) {
 
     let score, source;
     if (etfChange != null && mom.available) {
-      score = 0.7 * etfChange + 0.2 * mom.mom5 + 0.1 * mom.maTrend; source = 'etf';
+      // 若有元参数(持续自我迭代产出), 用其动量/估值权重重算综合分 (实时更新+历史结合的落地)
+      if (metaWeights && (metaWeights.momentum != null || metaWeights.valuation != null)) {
+        const m = metaWeights.momentum || 0, v = metaWeights.valuation || 0;
+        const s = m + v || 1;
+        score = (m / s) * (0.8 * etfChange + 0.2 * mom.mom5) + (v / s) * mom.maTrend;
+      } else {
+        score = 0.7 * etfChange + 0.2 * mom.mom5 + 0.1 * mom.maTrend;
+      }
+      source = 'etf' + (metaWeights ? '+meta' : '');
     } else if (etfChange != null) {
       score = etfChange; source = 'etf';
     } else if (est && mom.available) {
@@ -212,4 +231,4 @@ async function fetchRealtimeSectorScores(opts = {}) {
   return out;
 }
 
-module.exports = { fetchRealtimeSectorScores, fetchLiveEstimate, calcMomentum };
+module.exports = { fetchRealtimeSectorScores, fetchLiveEstimate, calcMomentum, loadMetaWeights };

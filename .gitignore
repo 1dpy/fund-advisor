@@ -8,6 +8,8 @@ node_modules/
 cache/
 bt_cache/
 data_cache/
+# 累积真实净值历史 + 自我迭代元参数(本地生成, 不入库; 每次clone重新seed)
+data/
 evolution.json
 reports/
 *.log

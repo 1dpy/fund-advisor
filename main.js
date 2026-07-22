@@ -40,7 +40,7 @@ const { runMLEnsemble } = require('./src/quant/ml_ensemble');
 const { analyzeFundHoldings } = require('./src/holdings_analyzer');
 const { getSettlementTimeline } = require('./src/t1_calendar');
 const { generateUltimatePortfolioAdvice } = require('./src/advisor_v5_ultimate');
-const { fetchRealtimeSectorScores } = require('./src/realtime_quotes');
+const { fetchRealtimeSectorScores, loadMetaWeights } = require('./src/realtime_quotes');
 const { generateAggressivePortfolioAdvice } = require('./src/advisor_v6_aggressive');
 const { applyAdvice } = require('./src/apply_advice');
 const { recordDecision } = require('./src/evolution');
@@ -163,8 +163,10 @@ async function main() {
         } catch (e) { if (!quiet) console.log('  ML选基失败: ' + e.message); mlPicks = null; }
       } else {
         try {
-          if (!quiet) process.stdout.write('  📡 读取实时行情(盘中估值+动量), 动态选基中... ');
-          realtimeScores = await fetchRealtimeSectorScores({ days: 12, delayMs: 120 });
+          if (!quiet) process.stdout.write('  📡 读取实时行情(ETF实时成交价+动量), 动态选基中... ');
+          // 把持续自我迭代产出的元参数(动量/估值权重)喂给实时综合分, 实现"实时+历史"结合
+          const metaWeights = loadMetaWeights();
+          realtimeScores = await fetchRealtimeSectorScores({ days: 12, delayMs: 120, metaWeights: metaWeights || undefined });
           const top = realtimeScores.slice(0, 4);
           if (!quiet) console.log('完成');
           if (!quiet) {

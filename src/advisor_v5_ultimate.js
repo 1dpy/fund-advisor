@@ -18,6 +18,16 @@ const { BUDGET, WATCHLIST, FEE_CONFIG, RISK_CONFIG, STRATEGY, STRATEGY_CONFIG, P
 
 const ROOT = path.join(__dirname, '..');
 const HOLDINGS_PATH = path.join(ROOT, 'holdings.json');
+const META_PATH = path.join(ROOT, 'data', 'meta_params.json');
+
+// 持续自我迭代产出的元参数: 每次运行刷新, 决定动态选基的取前 N 只(topK)与因子权重
+function loadMetaParams() {
+  try { return JSON.parse(fs.readFileSync(META_PATH, 'utf8')); } catch (e) { return null; }
+}
+const META = loadMetaParams();
+const EFFECTIVE_PICK_COUNT = (META && META.selfParams && META.selfParams.topK)
+  ? Math.max(2, Math.min(MAX_DEPLOY_SECTORS, META.selfParams.topK))
+  : REALTIME_PICK_COUNT;
 
 // ============================================================
 // 1. 工具函数
@@ -204,7 +214,7 @@ function pickPreferredSector(funds, totalAsset, mlPicks, realtimeScores) {
         code: r.code, name: r.name, sector: r.sector, maxWeight: r.maxWeight,
         weight: 1, realtime: true, changePct: r.changePct, score: r.score, mom5: r.mom5,
       });
-      if (picks.length >= REALTIME_PICK_COUNT) break; // 动态挑最强的 N 只 (用户要 4 只)
+      if (picks.length >= EFFECTIVE_PICK_COUNT) break; // 动态挑最强的 N 只 (由自我迭代元参数 topK 决定)
     }
     return picks;
   }
@@ -593,8 +603,9 @@ function generateUltimatePortfolioAdvice(marketSentiment, mlPicks, realtimeScore
   advice.strategy = STRATEGY;
   advice.marketSentiment = marketSentiment || null;
   advice.mlPicks = mlPicks || null;
+  advice.metaParams = META; // 持续自我迭代最新元参数 (topK / 因子权重 / holdout 表现)
   advice.realtimePicks = (Array.isArray(realtimeScores) && realtimeScores.length > 0)
-    ? realtimeScores.slice(0, REALTIME_PICK_COUNT).map(r => ({
+    ? realtimeScores.slice(0, EFFECTIVE_PICK_COUNT).map(r => ({
         code: r.code, name: r.name, sector: r.sector,
         changePct: r.changePct, mom5: r.mom5, score: r.score,
       }))

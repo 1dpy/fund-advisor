@@ -71,6 +71,17 @@ npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA/自
 npm run ui                  # 启动本地仪表盘, 浏览器打开 http://localhost:8787
 ```
 
+### P5 — 持续自我迭代（实时数据 + 历史数据结合）
+- **用户要求**：每次运行都要自我迭代，把"实时更新的数据"和"以往的数据"结合起来。
+- **引擎** `src/continual_self_iterate.js`：
+  1. **以往数据**：`data/sector_history.json` 累积各赛道基金**真实单位净值(NAV)**——首次从东方财富抓真实历史作 seed，之后每次只**增量追加**，历史越滚越长（continual / online learning）。
+  2. **实时更新**：每次运行抓最新一期真实净值（基金 NAV 为 T+1，即上一交易日单位净值，盘前已披露）追加到历史尾部。
+  3. **自我迭代**：合并后的序列跑 `quant_lab_core.runSelfIterate`（walk-forward 元优化，**最终 holdout 全程冻结**当证据），得到新元参数 `{momentum, valuation, sentiment, topK}`。
+  4. **持久化 + 落地**：元参数写入 `data/meta_params.json`，决策链直接消费——`advisor_v5` 用 `topK` 决定动态选基取前 N 只，`realtime_quotes` 用动量/估值权重重算实时综合分。
+- **失败安全**：网络被拦（沙箱/CI）时自动退化——有历史用历史、无历史用合成序列跑通流程并保证 CI 绿，且合成数据**绝不写入**真实历史文件。
+- **已接入每日 14:30 自动化**：先 `node src/continual_self_iterate.js` 刷新元参数，再 `node main.js --ultimate --apply --ding` 用更新后的参数出操作单。
+
+
 
 ---
 
