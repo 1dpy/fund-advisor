@@ -56,12 +56,13 @@ npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA/自
 ```
 
 ### P4 — 本地可视化仪表盘（Web Dashboard）
-- **零依赖本地服务** `dashboard_server.js`（Node 内置 `http`，无需 Express）：把持仓账本 / 因子热力图 / 回测对比 / 自我迭代 四个维度，做成浏览器里可交互的仪表盘，复试可现场演示。
-- **四个标签页**：
+- **零依赖本地服务** `dashboard_server.js`（Node 内置 `http`，无需 Express）：把持仓账本 / 因子热力图 / 回测对比 / 自我迭代 / 实时赛道榜 五个维度，做成浏览器里可交互的仪表盘，复试可现场演示。
+- **五个标签页**：
   1. **概览 · 持仓**：读 `holdings.json` 算总资产 / 盈亏 / 权重，资产配置环形图 + 各持仓盈亏柱图（红涨绿跌）+ 明细表。
   2. **因子热力图**：因子库快照——综合 alpha 排名 + 截面 z-score 热力网格（红=正向强 / 绿=反向强）。
   3. **回测对比**：7–8 策略权益曲线（Chart.js 交互）+ 收益/夏普/回撤对比 + 策略表。
   4. **自我迭代**：元参数演化曲线（动量/估值/情绪权重 + λ 正则）+ 过拟合降级 Δ 轨迹 + holdout 权益对比 + 折表 + 诚实结论。
+  5. **实时赛道榜**：当日实时赛道综合得分 Top 10 —— `src/realtime_quotes.js` 抓盘中估值/动量合成综合分（=0.6×实时估值%+0.25×近5日%+0.15×均线偏离%），横向柱图（红涨绿跌）+ 明细表；离线/沙箱自动回退确定性合成分，复试可现场切 `实盘净值` 看真实盘中强弱。
 - **数据模式**：默认`合成数据(离线)`（确定性、秒开）；切到`实盘净值`即联网拉东方财富历史净值重算（失败安全降级）。
 - **图表库**：`dashboard/vendor/chart.umd.min.js`（Chart.js v4 已 vendored，离线可用，无需 CDN）。
 
@@ -122,7 +123,7 @@ stock-fund-advisor/
 ├── backtest_model_compare.js  # 多策略回测对比 (MPT/风险平价/等权/动量)
 ├── backtest_quant_lab.js      # 量化实验室: 因子模型+严格WF+敏感性热力图+阈值再平衡 (HTML报告)
 ├── backtest_self_iterate.js   # 自我迭代验证+更长数据测试集 (HTML报告)
-├── dashboard_server.js        # 零依赖本地 Web 仪表盘 (持仓/因子/回测/自我迭代, Chart.js)
+├── dashboard_server.js        # 零依赖本地 Web 仪表盘 (持仓/因子/回测/自我迭代/实时赛道榜, Chart.js)
 ├── dashboard/                 # 仪表盘前端: index.html + app.js + style.css + vendor/chart.umd.min.js
 ├── test/offline_quant.js      # 离线量化校验 (因子/WF/敏感性/EWMA/自我迭代)
 ├── holdings.example.json      # 持仓示例 (真实持仓不入库)

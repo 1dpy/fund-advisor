@@ -30,6 +30,7 @@
     <button data-tab="factors">因子热力图</button>
     <button data-tab="backtest">回测对比</button>
     <button data-tab="selfiterate">自我迭代</button>
+    <button data-tab="sectors">实时赛道榜</button>
   </nav>
 
   <main>
@@ -67,6 +68,13 @@
       </div>
       <div class="card"><h3>自我迭代折表</h3><div id="foldTable"></div></div>
       <div class="card" id="verdictCard"><h3>结论</h3><div id="verdict"></div></div>
+    </section>
+
+    <!-- 实时赛道榜 -->
+    <section id="sectors" class="tabpane">
+      <div class="cards" id="secCards"></div>
+      <div class="card"><h3>当日最强赛道 Top 10 <span class="hint" id="secMeta"></span></h3><div class="chart-wrap sectors"><canvas id="sectorBar"></canvas></div></div>
+      <div class="card"><h3>综合得分明细 <span class="hint">综合分 = 0.6×实时估值% + 0.25×近5日% + 0.15×均线偏离%</span></h3><div id="secTable"></div></div>
     </section>
   </main>
 

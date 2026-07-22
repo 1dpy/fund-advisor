@@ -194,6 +194,38 @@
     showStatus('模式=' + d.mode + ' ｜ 折数=' + folds.length + ' ｜ 最终λ=' + d.metaFinal.lambda + ' ｜ 降级Δ EMA=' + d.metaFinal.degEMA);
   }
 
+  // ---------- 实时赛道榜 ----------
+  function renderSectors(d) {
+    var top = d.top || [];
+    var lead = top[0];
+    $('secCards').innerHTML = lead ? (
+      kpi('榜首赛道', lead.name, lead.score >= 0 ? 'up' : 'down') +
+      kpi('榜首综合分', (lead.score >= 0 ? '+' : '') + lead.score, lead.score >= 0 ? 'up' : 'down') +
+      kpi('候选池', d.total + ' 只', '') +
+      kpi('数据来源', d.dataSource.indexOf('live') === 0 ? '实时' : '模拟', '')
+    ) : '';
+
+    var labels = top.map(function (t) { return t.name; });
+    var scores = top.map(function (t) { return t.score; });
+    makeChart('sectorBar', {
+      type: 'bar',
+      data: { labels: labels, datasets: [{ label: '综合分', data: scores, backgroundColor: scores.map(function (s) { return s >= 0 ? UP : DOWN; }) }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return '综合分 ' + c.raw; } } } }, scales: { x: { title: { display: true, text: '综合得分 (红涨绿跌)' } } } }
+    });
+
+    var rows = top.map(function (t, i) {
+      var cp = t.changePct == null ? '—' : (t.changePct >= 0 ? '+' : '') + t.changePct + '%';
+      return '<tr><td>' + (i + 1) + '</td><td>' + t.name + '</td><td>' + (t.sector || '') + '</td>' +
+        '<td class="' + (t.changePct >= 0 ? 'tag-up' : 'tag-down') + '">' + cp + '</td>' +
+        '<td class="' + (t.mom5 >= 0 ? 'tag-up' : 'tag-down') + '">' + (t.mom5 >= 0 ? '+' : '') + t.mom5 + '%</td>' +
+        '<td class="' + (t.maTrend >= 0 ? 'tag-up' : 'tag-down') + '">' + (t.maTrend >= 0 ? '+' : '') + t.maTrend + '%</td>' +
+        '<td class="score ' + (t.score >= 0 ? 'tag-up' : 'tag-down') + '">' + (t.score >= 0 ? '+' : '') + t.score + '</td></tr>';
+    }).join('');
+    $('secTable').innerHTML = '<table><thead><tr><th>排名</th><th>名称</th><th>赛道</th><th>实时估值%</th><th>近5日%</th><th>均线偏离%</th><th>综合分</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    $('secMeta').textContent = '数据=' + d.dataSource + ' ｜ 截至=' + d.asOf;
+    showStatus('实时赛道综合得分 Top' + top.length + ' ｜ 综合分 = 0.6×实时估值% + 0.25×近5日% + 0.15×均线偏离% ｜ 供 advisor 动态选基 Top-N');
+  }
+
   // ---------- 工具 ----------
   function fmt(n) { if (n == null || isNaN(n)) return '0'; var a = Math.abs(n); if (a >= 1e8) return (n / 1e8).toFixed(2) + '亿'; if (a >= 1e4) return (n / 1e4).toFixed(2) + '万'; return Number(n.toFixed(2)).toLocaleString('zh-CN'); }
   function kpi(label, val, sign) { return '<div class="kpi"><div class="label">' + label + '</div><div class="val ' + (sign || '') + '">' + val + '</div></div>'; }
@@ -211,6 +243,8 @@
       fetchJSON('/api/backtest' + q).then(renderBacktest).catch(function (e) { showStatus('回测加载失败: ' + e.message, true); });
     } else if (tab === 'selfiterate') {
       fetchJSON('/api/selfiterate' + q).then(renderSelfIterate).catch(function (e) { showStatus('自我迭代加载失败: ' + e.message, true); });
+    } else if (tab === 'sectors') {
+      fetchJSON('/api/sectors' + q).then(renderSectors).catch(function (e) { showStatus('实时赛道加载失败: ' + e.message, true); });
     }
   }
 

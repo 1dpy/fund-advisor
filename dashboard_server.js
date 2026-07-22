@@ -12,6 +12,7 @@
  *   GET /api/factors?mode=     因子排名 + 截面 z-score 热力矩阵 (demo|live)
  *   GET /api/backtest?mode=    7 策略回测对比 (权益曲线/夏普/回撤/调仓)
  *   GET /api/selfiterate?mode= 自我迭代元优化 (折表/元参数演化/holdout 曲线)
+ *   GET /api/sectors?mode=     当日实时赛道综合得分 Top10 (实时抓取|确定性合成回退)
  * 所有计算经 src/quant_lab_core.js, 失败安全降级为合成数据; 结果内存缓存复用。
  */
 
@@ -121,6 +122,67 @@ async function selfIterateData(mode) {
   return { mode: prep.dataMode, nDays: prep.N, holdout: HOLDOUT, ...si };
 }
 
+// ---------- 实时赛道综合得分 (Top10) ----------
+// 字符串→32位种子 (FNV-1a)
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+
+// 确定性合成: 用修正后的 mulberry32, 按 code+day 播种 → demo/离线可复现, 与实盘同公式
+function syntheticSectorScores() {
+  let sectors = [];
+  try { sectors = (require('./src/config').PREFERRED_SECTORS || []).slice(); } catch (e) { sectors = []; }
+  if (!sectors.length) {
+    sectors = [
+      { code: '008282', name: '国泰芯片ETF联接C', sector: '半导体' },
+      { code: '017470', name: '嘉实中证半导体C', sector: '半导体' },
+      { code: '011609', name: '易方达科创50联接C', sector: '科创' },
+      { code: '011840', name: '天弘中证人工智能C', sector: '人工智能' },
+      { code: '008087', name: '华夏5G通信联接C', sector: '5G通信' },
+      { code: '012322', name: '东财云计算增强C', sector: '云计算' },
+      { code: '013402', name: '华夏恒生科技联接C', sector: '恒生科技' },
+      { code: '012083', name: '博时数字经济混合C', sector: '数字经济' },
+      { code: '027495', name: '易方达电池ETF联接C', sector: '新能源' },
+      { code: '007531', name: '华宝券商联接C', sector: '券商' },
+    ];
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  const arr = sectors.map((s) => {
+    const r1 = core.mulberry32(hashStr(s.code + 'c' + day))();
+    const r2 = core.mulberry32(hashStr(s.code + 'm' + day))();
+    const r3 = core.mulberry32(hashStr(s.code + 'a' + day))();
+    const changePct = +(r1 * 4 - 1.6).toFixed(2);   // -1.6 .. 2.4
+    const mom5 = +(r2 * 7 - 2.5).toFixed(2);          // -2.5 .. 4.5
+    const maTrend = +(r3 * 4 - 1.5).toFixed(2);       // -1.5 .. 2.5
+    const score = +(0.6 * changePct + 0.25 * mom5 + 0.15 * maTrend).toFixed(2);
+    return { code: s.code, name: s.name, sector: s.sector || '', maxWeight: s.maxWeight || 0, changePct, gztime: '', mom5, maTrend, score };
+  });
+  arr.sort((a, b) => b.score - a.score);
+  return arr;
+}
+
+async function sectorsData(mode) {
+  const forceDemo = mode !== 'live';
+  const asOf = new Date().toISOString().slice(0, 10);
+  let scores = null, dataSource = 'synthetic';
+  if (!forceDemo) {
+    try {
+      const rt = require('./src/realtime_quotes');
+      const res = await Promise.race([
+        rt.fetchRealtimeSectorScores({ days: 12, delayMs: 60 }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000)),
+      ]);
+      // 若整批抓取失败(沙箱DNS被拦等) → 分数全为 -999, 回退合成
+      if (res && res.length && res.some((a) => a.score > -999)) {
+        scores = res;
+        const withEst = res.filter((a) => a.changePct != null).length;
+        dataSource = withEst > 0 ? 'live' : 'live (仅动量, 实时估值N/A)';
+      } else dataSource = 'synthetic (实盘抓取失败, 已回退)';
+    } catch (e) { dataSource = 'synthetic (实盘抓取失败, 已回退)'; }
+  }
+  if (!scores) scores = syntheticSectorScores();
+  const top = scores.slice(0, 10);
+  return { asOf, mode: forceDemo ? 'demo' : 'live', dataSource, total: scores.length, top, all: scores };
+}
+
 // ---------- 静态文件托管 (防目录穿越) ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 function serveStatic(rel, res) {
@@ -158,6 +220,11 @@ const server = http.createServer(async (req, res) => {
       const refresh = url.searchParams.get('refresh') === '1';
       return sendJSON(res, refresh ? await selfIterateData(mode) : await getCached('selfiterate_' + mode, mode === 'live' ? 60000 : 300000, () => selfIterateData(mode)));
     }
+    if (p === '/api/sectors') {
+      const mode = url.searchParams.get('mode') === 'live' ? 'live' : 'demo';
+      const refresh = url.searchParams.get('refresh') === '1';
+      return sendJSON(res, refresh ? await sectorsData(mode) : await getCached('sectors_' + mode, mode === 'live' ? 60000 : 300000, () => sectorsData(mode)));
+    }
     if (p === '/' || p === '/index.html') return serveStatic('index.html', res);
     return serveStatic(p.replace(/^\//, ''), res);
   } catch (e) {
@@ -173,4 +240,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { server, portfolioData, factorsData, backtestData, selfIterateData };
+module.exports = { server, portfolioData, factorsData, backtestData, selfIterateData, sectorsData };

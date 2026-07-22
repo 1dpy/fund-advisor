@@ -61,6 +61,7 @@ main { padding: 16px 22px 40px; max-width: 1180px; margin: 0 auto; }
 
 .chart-wrap { position: relative; height: 300px; }
 .chart-wrap.tall { height: 360px; }
+.chart-wrap.sectors { height: 460px; }
 
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--line); }
