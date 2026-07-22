@@ -1,0 +1,14 @@
+[
+  {
+    "code": "CASH_YEB",
+    "name": "余额宝(现金)",
+    "type": "cash",
+    "buyPrice": 4000,
+    "shares": 1,
+    "costBasis": 4000,
+    "buyDate": "2026-01-01",
+    "currentValue": 4000,
+    "holdingReturn": 0,
+    "notes": "示例持仓: 初始现金 ¥4000, 首次运行请复制为 holdings.json"
+  }
+]
