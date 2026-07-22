@@ -525,7 +525,8 @@ function printUltimateAdvice(advice) {
     for (const op of advice.operations) {
       const amount = op.amount ? ` ¥${op.amount.toFixed(2)}` : '';
       const target = op.target ? ` → ${op.target}` : '';
-      console.log(`    ${idx}. [${op.action}] ${op.name}${amount}${target}`);
+      const codeTag = (op.code && op.code !== 'CASH') ? `(${op.code})` : '';
+      console.log(`    ${idx}. [${op.action}] ${op.name}${codeTag}${amount}${target}`);
       console.log(`       原因: ${op.reason}`);
       console.log(`       紧急度: ${op.urgency || 'LOW'}`);
       idx++;
@@ -560,7 +561,8 @@ function formatDingtalkUltimate(advice) {
     const amt = op.amount ? ` ¥${op.amount}` : '';
     const tgt = op.target ? ` → ${op.target}` : '';
     const icon = op.action === 'SELL' ? '🔴' : (op.action === 'CONVERT') ? '🔄' : (op.action === 'BUY' || op.action === 'DCA') ? '🟢' : (op.action === 'PLAN') ? '📌' : '⚪';
-    lines.push(`${i}. ${icon} **[${op.action}] ${op.name}**${amt}${tgt}`);
+    const codeTag = (op.code && op.code !== 'CASH') ? `(${op.code})` : '';
+    lines.push(`${i}. ${icon} **[${op.action}] ${op.name}${codeTag}**${amt}${tgt}`);
     lines.push(`> ${op.reason}`);
     i++;
   }
