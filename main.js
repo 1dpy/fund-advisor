@@ -200,7 +200,16 @@ async function main() {
       if (dingMode) {
         process.stdout.write('📱 正在推送到钉钉... ');
         const dingContent = formatDingtalkUltimate(advice);
-        const ok = await sendMarkdown('基金操作指令V5', dingContent);
+        // AI 自然语言解读 (环境门控: 仅配置 LLM_API_KEY 时生成, 未配置优雅跳过)
+        let dingContentFinal = dingContent;
+        if (process.env.LLM_API_KEY) {
+          try {
+            const { generateExplanation } = require('./src/llm_report');
+            const explanation = await generateExplanation(advice);
+            if (explanation) dingContentFinal = dingContent + `\n\n---\n💡 **AI 解读**\n> ${explanation.replace(/\n/g, '\n> ')}`;
+          } catch (e) { if (!quiet) console.log('  (LLM解读跳过: ' + e.message + ')'); }
+        }
+        const ok = await sendMarkdown('基金操作指令V5', dingContentFinal);
         console.log(ok ? '✅ 已发送!' : '❌ 发送失败');
       }
       return;

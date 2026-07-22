@@ -1,7 +1,7 @@
 {
   "name": "stock-fund-advisor",
-  "version": "4.0.0",
-  "description": "A股基金智能投资决策系统V4 - 7模型融合+注意力LSTM+卡尔曼+ARIMA 纯操作指令",
+  "version": "5.0.0",
+  "description": "A股基金智能投资决策系统 V5 — 实时动态选基 + PROFIT_FIRST 框架 + 马克维茨/风险平价组合优化 + 交易成本建模 + 严谨回测 (AI × 量化金融)",
   "main": "main.js",
   "scripts": {
     "start": "node main.js",
@@ -12,11 +12,13 @@
     "apply": "node main.js --apply",
     "ding": "node main.js --ding",
     "push": "node main.js --ding",
-    "train": "node main.js --train"
+    "train": "node main.js --train",
+    "backtest": "node backtest_model_compare.js",
+    "smoke": "node test/smoke.js"
   },
-  "keywords": ["stock", "fund", "A-share", "investment", "advisor"],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["stock", "fund", "a-share", "investment", "advisor", "robo-advisor", "quant", "markowitz", "mean-variance", "risk-parity", "portfolio-optimization", "backtest", "machine-learning"],
+  "author": "丁潘延 (1dpy)",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "axios": "^1.18.1",

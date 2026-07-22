@@ -29,10 +29,21 @@ jobs:
       - name: 准备示例持仓
         run: cp holdings.example.json holdings.json
 
+      - name: 安装依赖
+        run: npm install
+
       - name: 模块加载 + 离线冒烟测试
         run: node test/smoke.js
 
-      - name: 多策略回测 (联网抓取, 允许失败)
+      - name: 多策略回测 + 生成 HTML 报告 (联网抓取, 允许失败)
         continue-on-error: true
         run: |
           node backtest_model_compare.js 2>&1 | tail -25 || true
+
+      - name: 上传回测报告 (HTML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-report
+          path: reports/*.html
+          if-no-files-found: ignore
