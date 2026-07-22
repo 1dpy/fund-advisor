@@ -4,6 +4,13 @@ const assert = require('assert');
 
 const { generateUltimatePortfolioAdvice } = require('../src/advisor_v5_ultimate');
 const rt = require('../src/realtime_quotes');
+const fl = require('../src/factor_library');
+const wf = require('../src/walk_forward_pro');
+const sh = require('../src/sensitivity_heatmap');
+const po = require('../src/portfolio_optimizer');
+const ns = require('../src/news_sentiment');
+const de = require('../src/decision_explain');
+const llm = require('../src/llm_report');
 
 // 1) 模块导出检查
 assert.strictEqual(typeof rt.fetchRealtimeSectorScores, 'function',
@@ -37,3 +44,23 @@ assert.deepStrictEqual(picked, expect,
 console.log('✅ smoke test 通过');
 console.log('   operations =', advice.operations.length);
 console.log('   realtimePicks(Top4) =', advice.realtimePicks.map(p => `${p.code}:${p.sector}`).join(', '));
+
+// 3) 新量化模块可加载且纯函数可用 (不联网)
+assert.strictEqual(typeof fl.compositeScore, 'function', 'factor_library.compositeScore 应导出');
+assert.strictEqual(typeof wf.walkForwardFolds, 'function', 'walk_forward_pro.walkForwardFolds 应导出');
+assert.strictEqual(typeof sh.paramGrid, 'function', 'sensitivity_heatmap.paramGrid 应导出');
+assert.strictEqual(typeof po.riskParityEWMA, 'function', 'portfolio_optimizer.riskParityEWMA 应导出');
+assert.strictEqual(typeof ns.scoreTextSentiment, 'function', 'news_sentiment.scoreTextSentiment 应导出');
+assert.strictEqual(typeof de.explainOperations, 'function', 'decision_explain.explainOperations 应导出');
+assert.strictEqual(typeof llm.multiAgentDebate, 'function', 'llm_report.multiAgentDebate 应导出');
+
+// 因子合成快速校验 (确定性, 需 >=21 点)
+function gen(c, n) { const out = [1]; let v = 1; for (let i = 1; i < n; i++) { v *= 1 + 0.004 * Math.sin(i / 3 + c) + 0.01 * (c % 2 ? 1 : -1); out.push(v); } return out; }
+const codes = ['X1', 'X2', 'X3'];
+const cb = { X1: gen(1, 30), X2: gen(2, 30), X3: gen(3, 30) };
+const tbl = fl.computeAllFactors(codes, cb, { sentiment: 60, news: 0.1 });
+const z = fl.zscoreUniverse(tbl);
+const ranked = fl.compositeScore(z, { momentum: 0.5, valuation: 0.3, sentiment: 0.2 });
+assert.ok(Array.isArray(ranked) && ranked.length === 3, '因子合成分应返回 3 只排序结果');
+console.log('   factor composite top1 =', ranked[0].code, 'score=', ranked[0].score);
+console.log('✅ 新量化模块 (因子库/WF/敏感性/EWMA/舆情/归因/多Agent) 加载校验通过');

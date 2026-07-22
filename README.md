@@ -20,6 +20,33 @@
 
 ---
 
+## 🧪 量化方法升级（P0 / P1 / P2）
+
+> 在 V5「成本建模 + MPT + 风险平价 + walk-forward」基础上，按量化金融研究规范继续深化，形成一套**可解释、防过拟合、成本意识强**的决策框架。对应考研作品里的「AI × 量化金融」交叉能力。
+
+### P0 — 因子工程 · 严格验证 · 稳健性
+- **多因子库** `src/factor_library.js`：动量（1/3/6 月收益、MA 斜率、短期反转）、估值（净值历史分位、相对 MA60 折价、MA20 回撤——基金无 PE/PB，用历史分位代理便宜度）、情绪（市场恐慌贪婪 + 新闻舆情 + 波动放大）三大类因子。跨标的 z-score 标准化后加权合成 alpha 分，直接驱动「因子模型」策略。
+- **更严格的 walk-forward** `src/walk_forward_pro.js`：把历史切成多折，每折用**之前**的训练窗拟合权重、在**之后**的测试窗真样本外持有（测试窗内不重拟合），并输出**过拟合退化度 Δ = 训练窗夏普 − 样本外夏普**——Δ 显著为正即警示过拟合（参考 López de Prado 的 walk-forward + Purged K-fold）。
+- **参数敏感性热力图** `src/sensitivity_heatmap.js` + `report_chart.heatmapSVG`：在「动量权重 × 估值权重」网格上回测，渲染收益热力图，直观回答「我的策略是稳健，还是只在某一点侥幸最优」。
+
+### P1 — 成本意识 · 波动率建模
+- **阈值再平衡** `walk_forward_pro.thresholdBacktest`：仅在当前权重偏离目标超过 ±X% 才调仓。对**稳定目标（如等权）**可把调仓次数从每 5 日一次降到几乎不调（实测同等收益、成本拖累趋零）；对信号频繁更替的因子模型则收益有限——这正是「高换手 = 高成本拖累」的真实写照。
+- **EWMA 协方差 / 风险平价** `portfolio_optimizer.ewmaCovariance / riskParityEWMA`：用指数加权（RiskMetrics λ=0.94）给近期波动更高权重，捕捉「波动率聚集」，比等权样本协方差更稳健。
+
+### P2 — 可解释 AI · 多 Agent 辩论
+- **新闻舆情因子** `src/news_sentiment.js`：复用 `news.js` 词典型舆情打分，把财经新闻映射为数值因子（∈[-1,1]）接入情绪类因子；网络失败安全降级。
+- **LLM 多 Agent 多空辩论** `llm_report.multiAgentDebate`：看多 / 中性 / 看空三个 Agent 并行论证，再由裁判综合——比单一 LLM 叙述更能暴露风险与盲点（环境门控，无密钥自动跳过）。
+- **决策可解释归因** `src/decision_explain.js`：把每笔买卖归因于具体因子贡献（动量 / 估值 / 情绪各多少），生成人话说明，可推送钉钉 / 喂给 LLM 解读。
+
+运行量化实验室（自动出 HTML 报告，联网优先、失败回退合成数据）：
+```bash
+npm run quant:lab          # 联网回测 (东方财富净值)
+npm run quant:lab:demo     # 离线合成数据演示 (CI 友好)
+npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA)
+```
+
+---
+
 ## 🛠 技术栈
 
 | 类别 | 选型 |
@@ -27,7 +54,11 @@
 | 运行时 | Node.js (CommonJS) |
 | 网络 | axios（行情 / 净值抓取） |
 | 量化模型 | 自研 `src/quant/`：LSTM、Attention、RandomForest、Ensemble、Walk-forward |
-| 组合优化 | 自研 `src/portfolio_optimizer.js`：马克维茨均值-方差（Monte Carlo 有效前沿 / 最大夏普）、风险平价 |
+| 组合优化 | 自研 `src/portfolio_optimizer.js`：马克维茨均值-方差（Monte Carlo 有效前沿 / 最大夏普）、风险平价、**EWMA 指数加权协方差**风险平价 |
+| 多因子库 | 自研 `src/factor_library.js`：动量 / 估值（净值历史分位代理）/ 情绪 三大类因子，截面 z-score 标准化 + 加权合成 |
+| 严格回测 | 自研 `src/walk_forward_pro.js`：折叠式 walk-forward 防前视 + **过拟合退化度检测**；`backtest_quant_lab.js` 产出综合报告 |
+| 敏感性分析 | 自研 `src/sensitivity_heatmap.js` + `report_chart.heatmapSVG`：参数网格回测 → 收益热力图 |
+| 新闻舆情 / 归因 | 自研 `src/news_sentiment.js`（词典型舆情因子）、`src/decision_explain.js`（决策可解释归因） |
 | 成本模型 | 自研 `src/cost_model.js`：C 类基金赎回费阶梯 + 销售服务费 |
 | 可视化 | 自研 `src/report_chart.js`：零依赖 SVG 权益曲线 / 回撤 / 有效前沿 |
 | LLM 解读 | 自研 `src/llm_report.js`：OpenAI 兼容接口（DeepSeek / 通义等），环境变量注入密钥 |
@@ -50,12 +81,19 @@ stock-fund-advisor/
 │   ├── apply_advice.js        # 建议应用到持仓
 │   ├── dingtalk_v4.js         # 钉钉推送 (webhook 读环境变量)
 │   ├── cost_model.js          # 交易成本建模 (C类赎回费阶梯+销售服务费)
-│   ├── portfolio_optimizer.js  # 现代组合理论: 马克维茨 MPT + 风险平价
-│   ├── report_chart.js        # 零依赖 SVG 可视化 (权益曲线/回撤/有效前沿)
-│   ├── llm_report.js          # LLM 自然语言解读 (环境门控, AI 方向)
+│   ├── portfolio_optimizer.js  # 现代组合理论: 马克维茨 MPT + 风险平价 + EWMA风险平价
+│   ├── report_chart.js        # 零依赖 SVG 可视化 (权益曲线/回撤/有效前沿/热力图)
+│   ├── factor_library.js      # 多因子库: 动量/估值/情绪 + z-score + 加权合成
+│   ├── walk_forward_pro.js    # 严格 walk-forward + 过拟合退化度 + 阈值再平衡
+│   ├── sensitivity_heatmap.js # 参数敏感性网格回测
+│   ├── news_sentiment.js      # 新闻舆情因子 (数值化)
+│   ├── decision_explain.js    # 决策可解释归因 (因子贡献→人话)
+│   ├── llm_report.js          # LLM 解读 + 多Agent多空辩论 (环境门控, AI 方向)
 │   ├── quant/                 # 量化 ML 模块 (LSTM / Attention / RF / 集成)
-│   └── ...                    # 历史版本 advisor_v1~v4、解析器、报告器等
-├── backtest_*.js              # 多策略回测对比脚本
+│   └── ...                    # 历史版本 advisor_v1~v6、解析器、报告器等
+├── backtest_model_compare.js  # 多策略回测对比 (MPT/风险平价/等权/动量)
+├── backtest_quant_lab.js      # 量化实验室: 因子模型+严格WF+敏感性热力图+阈值再平衡 (HTML报告)
+├── test/offline_quant.js      # 离线量化校验 (因子/WF/敏感性/EWMA)
 ├── holdings.example.json      # 持仓示例 (真实持仓不入库)
 └── package.json
 ```

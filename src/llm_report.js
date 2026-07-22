@@ -58,4 +58,59 @@ async function generateExplanation(advice, opts = {}) {
   }
 }
 
-module.exports = { isEnabled, generateExplanation, buildPrompt };
+// ============================================================
+// LLM 多 Agent 多空辩论 (P2 · AI 方向)
+// ---------------------------------------------------------------
+// 让 3 个角色 Agent (看多 / 中性 / 看空) 并行对当日操作单做独立论证,
+// 再由"裁判"Agent 综合成一句话结论。参考 FinAgent / 多 Agent 金融决策的
+// "对抗性论证 → 合成"范式, 比单一 LLM 叙述更能暴露风险与盲点。
+//
+// 环境门控: 无 LLM_API_KEY 时返回 null, 主流程自动跳过。
+// 任一 Agent 失败不影响其余, 最终合成缺失部分安全降级。
+// ============================================================
+function debatePrompt(role, advice) {
+  const ctx = `策略=${advice.strategy || 'PROFIT_FIRST'}; 体制=${advice.regime || 'N/A'}; ` +
+    `操作=${(advice.operations || []).map((o) => `[${o.action}]${o.name}(${o.code})¥${o.amount || 0}`).join(', ') || '无'}`;
+  const roleInst = {
+    bull: '你是乐观派(看多)分析师。用 2-3 句, 强调今日买入/持有的理由与上行空间, 引用动量或估值便宜度。',
+    neutral: '你是中性派(客观)分析师。用 2-3 句, 客观指出机会与风险并存的要点, 不偏袒。',
+    bear: '你是谨慎派(看空)分析师。用 2-3 句, 重点提示下行风险、成本拖累或追高隐患, 给出警惕信号。',
+  }[role];
+  return `你是基金投资多Agent辩论系统的一员。\n${roleInst}\n背景: ${ctx}\n只输出中文论证, 不要重复对方观点, 不要给出具体操作指令。`;
+}
+
+async function callAgent(prompt, opts) {
+  const { apiKey, baseURL, model } = opts;
+  try {
+    const resp = await axios.post(
+      `${baseURL.replace(/\/$/, '')}/chat/completions`,
+      { model, messages: [{ role: 'user', content: prompt }], temperature: 0.7, max_tokens: 220 },
+      { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 20000 }
+    );
+    return resp.data?.choices?.[0]?.message?.content?.trim() || null;
+  } catch (e) { return null; }
+}
+
+async function multiAgentDebate(advice, opts = {}) {
+  const apiKey = opts.apiKey || process.env.LLM_API_KEY;
+  if (!apiKey) return null;
+  const baseURL = opts.baseURL || process.env.LLM_BASE_URL || 'https://api.deepseek.com/v1';
+  const model = opts.model || process.env.LLM_MODEL || 'deepseek-chat';
+  const o = { apiKey, baseURL, model };
+
+  // 三 Agent 并行论证
+  const [bull, neutral, bear] = await Promise.all([
+    callAgent(debatePrompt('bull', advice), o),
+    callAgent(debatePrompt('neutral', advice), o),
+    callAgent(debatePrompt('bear', advice), o),
+  ]);
+
+  // 裁判综合
+  const synthPrompt = `你是投资辩论裁判。基于以下三方观点, 用 2 句中文给出平衡结论: 今天这份操作单整体是否值得执行, 最关键的一个风险点是什么。\n` +
+    `看多: ${bull || '(缺失)'}\n中性: ${neutral || '(缺失)'}\n看空: ${bear || '(缺失)'}`;
+  const synthesis = await callAgent(synthPrompt, o);
+
+  return { bull, neutral, bear, synthesis, available: !!(bull || neutral || bear || synthesis) };
+}
+
+module.exports = { isEnabled, generateExplanation, buildPrompt, multiAgentDebate, debatePrompt };

@@ -35,10 +35,17 @@ jobs:
       - name: 模块加载 + 离线冒烟测试
         run: node test/smoke.js
 
+      - name: 离线量化校验 (因子库 / walk-forward / 敏感性 / EWMA)
+        run: node test/offline_quant.js
+
       - name: 多策略回测 + 生成 HTML 报告 (联网抓取, 允许失败)
         continue-on-error: true
         run: |
           node backtest_model_compare.js 2>&1 | tail -25 || true
+
+      - name: 量化实验室回测报告 (合成数据兜底, 离线可跑)
+        continue-on-error: true
+        run: node backtest_quant_lab.js --demo
 
       - name: 上传回测报告 (HTML)
         if: always()

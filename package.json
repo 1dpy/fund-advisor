@@ -1,7 +1,7 @@
 {
   "name": "stock-fund-advisor",
-  "version": "5.0.0",
-  "description": "A股基金智能投资决策系统 V5 — 实时动态选基 + PROFIT_FIRST 框架 + 马克维茨/风险平价组合优化 + 交易成本建模 + 严谨回测 (AI × 量化金融)",
+  "version": "6.0.0",
+  "description": "A股基金智能投资决策系统 V6 — 实时动态选基 + 多因子库(动量/估值/情绪) + 严格 walk-forward + 参数敏感性热力图 + 阈值再平衡 + EWMA风险平价 + 交易成本建模 + LLM多Agent辩论/决策归因 (AI × 量化金融)",
   "main": "main.js",
   "scripts": {
     "start": "node main.js",
@@ -14,9 +14,12 @@
     "push": "node main.js --ding",
     "train": "node main.js --train",
     "backtest": "node backtest_model_compare.js",
+    "quant:offline": "node test/offline_quant.js",
+    "quant:lab": "node backtest_quant_lab.js",
+    "quant:lab:demo": "node backtest_quant_lab.js --demo",
     "smoke": "node test/smoke.js"
   },
-  "keywords": ["stock", "fund", "a-share", "investment", "advisor", "robo-advisor", "quant", "markowitz", "mean-variance", "risk-parity", "portfolio-optimization", "backtest", "machine-learning"],
+  "keywords": ["stock", "fund", "a-share", "investment", "advisor", "robo-advisor", "quant", "factor-model", "multifactor", "markowitz", "mean-variance", "risk-parity", "ewma", "walk-forward", "portfolio-optimization", "backtest", "machine-learning", "sentiment", "explainable-ai"],
   "author": "丁潘延 (1dpy)",
   "license": "MIT",
   "type": "commonjs",

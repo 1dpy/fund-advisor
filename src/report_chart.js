@@ -110,4 +110,60 @@ function efficientFrontierSVG(frontier, opts = {}) {
   return s;
 }
 
-module.exports = { equityCurveSVG, drawdownSVG, efficientFrontierSVG };
+// ============================================================
+// 参数敏感性热力图 (color-mapped grid)
+//   matrix: number[][], rowLabels/colLabels: string[]
+//   opts: { title, lo, hi, fmt }  fmt(v)->字符串 用于单元格标注
+//   颜色: 红(低/亏) → 黄 → 绿(高/赚) 的连续映射
+// ============================================================
+function heatmapSVG(matrix, opts = {}) {
+  const { title = '参数敏感性热力图', fmt = (v) => (isFinite(v) ? v.toFixed(1) + '%' : 'N/A') } = opts;
+  if (!matrix || !matrix.length || !matrix[0].length) return '';
+  const rows = matrix.length, cols = matrix[0].length;
+  const cell = 92, padL = 120, padT = 34, padB = 54, padR = 16;
+  const w = padL + cols * cell + padR, h = padT + rows * cell + padB;
+  const lo = opts.lo != null ? opts.lo : Math.min(...matrix.flat().filter(isFinite));
+  const hi = opts.hi != null ? opts.hi : Math.max(...matrix.flat().filter(isFinite));
+  const span = (hi - lo) || 1e-6;
+  // 红(#dc2626)→黄(#facc15)→绿(#16a34a) 三段插值
+  function color(v) {
+    if (!isFinite(v)) return '#e2e8f0';
+    let t = (v - lo) / span; t = Math.max(0, Math.min(1, t));
+    const r = t < 0.5
+      ? Math.round(220 + (250 - 220) * (t / 0.5))
+      : Math.round(250 + (22 - 250) * ((t - 0.5) / 0.5));
+    const g = t < 0.5
+      ? Math.round(38 + (204 - 38) * (t / 0.5))
+      : Math.round(204 + (163 - 204) * ((t - 0.5) / 0.5));
+    const b = t < 0.5
+      ? Math.round(38 + (21 - 38) * (t / 0.5))
+      : Math.round(21 + (74 - 21) * ((t - 0.5) / 0.5));
+    return `rgb(${r},${g},${b})`;
+  }
+  let s = svgHeader(w, h) + `<text x="${padL}" y="18" fill="${COL.text}" font-weight="bold">${title}</text>`;
+  // 列标签
+  for (let j = 0; j < cols; j++) {
+    s += `<text x="${padL + j * cell + cell / 2}" y="${padT - 8}" text-anchor="middle" fill="${COL.text}" font-size="10">${matrix[0] && opts.colLabels ? opts.colLabels[j] : ''}</text>`;
+  }
+  for (let i = 0; i < rows; i++) {
+    // 行标签
+    s += `<text x="${padL - 8}" y="${padT + i * cell + cell / 2 + 3}" text-anchor="end" fill="${COL.text}" font-size="10">${opts.rowLabels ? opts.rowLabels[i] : ''}</text>`;
+    for (let j = 0; j < cols; j++) {
+      const v = matrix[i][j];
+      const x = padL + j * cell, y = padT + i * cell;
+      s += `<rect x="${x + 2}" y="${y + 2}" width="${cell - 4}" height="${cell - 4}" fill="${color(v)}" rx="4"/>`;
+      s += `<text x="${x + cell / 2}" y="${y + cell / 2 + 4}" text-anchor="middle" fill="#0f172a" font-size="11" font-weight="bold">${fmt(v)}</text>`;
+    }
+  }
+  // 图例
+  const lgX = padL, lgY = padT + rows * cell + 22, lgW = Math.min(220, cols * cell);
+  const grad = `lg_${title.length}`;
+  s += `<defs><linearGradient id="${grad}" x1="0" x2="1"><stop offset="0" stop-color="#dc2626"/><stop offset="0.5" stop-color="#facc15"/><stop offset="1" stop-color="#16a34a"/></linearGradient></defs>`;
+  s += `<rect x="${lgX}" y="${lgY}" width="${lgW}" height="10" fill="url(#${grad})" rx="2"/>`;
+  s += `<text x="${lgX}" y="${lgY + 24}" text-anchor="start" fill="${COL.text}" font-size="9">${lo.toFixed(1)}%</text>`;
+  s += `<text x="${lgX + lgW}" y="${lgY + 24}" text-anchor="end" fill="${COL.text}" font-size="9">${hi.toFixed(1)}%</text>`;
+  s += `</svg>`;
+  return s;
+}
+
+module.exports = { equityCurveSVG, drawdownSVG, efficientFrontierSVG, heatmapSVG };

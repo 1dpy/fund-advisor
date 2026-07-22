@@ -93,6 +93,67 @@ function portVariance(weights, cov) {
   return v;
 }
 
+// ---- EWMA (指数加权) 协方差与波动率 ----
+// 金融时间序列存在"波动率聚集"——近期波动更能预测未来。EWMA 给近期
+// 收益更高权重 (RiskMetrics 标准 λ=0.94), 比等权样本协方差更稳健。
+//   returns: { code: number[] } 日收益率
+//   lambda: 衰减因子, 默认 0.94 (J.P. Morgan RiskMetrics 推荐值)
+// 返回 { codes, matrix, vols: {code: 年化波动率} }
+function ewmaCovariance(returns, lambda = 0.94) {
+  const codes = Object.keys(returns);
+  const n = codes.length;
+  const T = returns[codes[0]].length;
+  const mean = meanVector(returns);
+  // 去均值残差
+  const resid = {};
+  for (const c of codes) resid[c] = returns[c].map((v, t) => v - mean[c]);
+  // EWMA 权重 (最近期权重最高), 归一化
+  const w = [];
+  let wsum = 0;
+  for (let t = 0; t < T; t++) { const wt = Math.pow(lambda, T - 1 - t); w.push(wt); wsum += wt; }
+  for (let t = 0; t < T; t++) w[t] /= wsum;
+  const matrix = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = i; j < n; j++) {
+      let s = 0;
+      for (let t = 0; t < T; t++) s += w[t] * resid[codes[i]][t] * resid[codes[j]][t];
+      matrix[i][j] = s; matrix[j][i] = s;
+    }
+  }
+  // 年化波动率
+  const vols = {};
+  for (let i = 0; i < n; i++) vols[codes[i]] = Math.sqrt(matrix[i][i]) * Math.sqrt(252);
+  return { codes, matrix, vols };
+}
+
+// 风险平价求解 (坐标下降), 与协方差来源无关 —— MPT/风险平价共用
+function solveRiskParity(matrix, codes, opts = {}) {
+  const { maxIter = 200, tol = 1e-7, maxWeight = 0.25 } = opts;
+  const n = codes.length;
+  let w = new Array(n).fill(1 / n);
+  for (let it = 0; it < maxIter; it++) {
+    const portVar = portVariance(Object.fromEntries(codes.map((c, i) => [c, w[i]])), { codes, matrix });
+    if (portVar <= 0) break;
+    const marginal = new Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      let c = 0;
+      for (let j = 0; j < n; j++) c += matrix[i][j] * w[j];
+      marginal[i] = c * w[i];
+    }
+    const avg = marginal.reduce((a, b) => a + b, 0) / n;
+    let maxStep = 0;
+    for (let i = 0; i < n; i++) {
+      const adj = (marginal[i] - avg) / (avg + 1e-12);
+      w[i] = Math.max(0, Math.min(maxWeight, w[i] * (1 - 0.3 * adj)));
+      maxStep = Math.max(maxStep, Math.abs(adj));
+    }
+    const ws = w.reduce((a, b) => a + b, 0);
+    if (ws > 0) w = w.map((x) => x / ws);
+    if (maxStep < tol) break;
+  }
+  return w;
+}
+
 // 随机权重 (指数归一化, 受 maxWeight 截断)
 function randomWeights(n, rng, maxWeight) {
   const raw = [];
@@ -130,37 +191,31 @@ function markowitz(navs, opts = {}) {
   return { frontier: points, maxSharpe: bestSharpe, minVariance: minVar, codes };
 }
 
-// 风险平价 (等风险贡献, 循环坐标下降)
-//   navs: { code: number[] }; opts: { maxIter=200, tol=1e-6, maxWeight }
+// 风险平价 (等风险贡献) — 使用等权样本协方差 (基准版)
+//   navs: { code: number[] }; opts: { maxIter, tol, maxWeight }
 function riskParity(navs, opts = {}) {
-  const { maxIter = 200, tol = 1e-7, maxWeight = 0.25 } = opts;
+  const { maxWeight = 0.25 } = opts;
   const returns = dailyReturns(navs);
   const cov = covariance(returns);
   const { codes, matrix } = cov;
-  const n = codes.length;
-  let w = new Array(n).fill(1 / n);
+  const w = solveRiskParity(matrix, codes, { ...opts, maxWeight });
+  return finalizeRiskParity(w, codes, returns, cov);
+}
 
-  for (let it = 0; it < maxIter; it++) {
-    // 组合方差与各资产边际贡献
-    const portVar = portVariance(Object.fromEntries(codes.map((c, i) => [c, w[i]])), cov);
-    if (portVar <= 0) break;
-    const marginal = new Array(n).fill(0);
-    for (let i = 0; i < n; i++) {
-      let c = 0;
-      for (let j = 0; j < n; j++) c += matrix[i][j] * w[j];
-      marginal[i] = c * w[i]; // 第i资产的风险贡献 (w_i * (Σw)_i)
-    }
-    const avg = marginal.reduce((a, b) => a + b, 0) / n;
-    let maxStep = 0;
-    for (let i = 0; i < n; i++) {
-      const adj = (marginal[i] - avg) / (avg + 1e-12);
-      w[i] = Math.max(0, Math.min(maxWeight, w[i] * (1 - 0.3 * adj)));
-      maxStep = Math.max(maxStep, Math.abs(adj));
-    }
-    const ws = w.reduce((a, b) => a + b, 0);
-    if (ws > 0) w = w.map((x) => x / ws);
-    if (maxStep < tol) break;
-  }
+// 风险平价 — 使用 EWMA(指数加权) 协方差 (对波动率聚集更敏感)
+//   lambda: 衰减因子, 默认 0.94 (J.P. Morgan RiskMetrics)
+function riskParityEWMA(navs, opts = {}) {
+  const { maxWeight = 0.25, lambda = 0.94 } = opts;
+  const returns = dailyReturns(navs);
+  const cov = ewmaCovariance(returns, lambda);
+  const { codes, matrix } = cov;
+  const w = solveRiskParity(matrix, codes, { ...opts, maxWeight });
+  const rp = finalizeRiskParity(w, codes, returns, cov);
+  rp.vols = cov.vols; // 附上 EWMA 年化波动率
+  return rp;
+}
+
+function finalizeRiskParity(w, codes, returns, cov) {
   const mean = meanVector(returns);
   const annualize = 252;
   const ret = portReturn(Object.fromEntries(codes.map((c, i) => [c, w[i]])), mean) * annualize;
@@ -173,4 +228,4 @@ function riskParity(navs, opts = {}) {
   };
 }
 
-module.exports = { dailyReturns, meanVector, covariance, markowitz, riskParity, mulberry32 };
+module.exports = { dailyReturns, meanVector, covariance, ewmaCovariance, markowitz, riskParity, riskParityEWMA, solveRiskParity, mulberry32 };
