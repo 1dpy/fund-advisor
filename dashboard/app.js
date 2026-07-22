@@ -198,11 +198,16 @@
   function renderSectors(d) {
     var top = d.top || [];
     var lead = top[0];
+    var srcLabel = '模拟';
+    if (d.dataSource.indexOf('ETF实时') >= 0) srcLabel = 'ETF实时';
+    else if (d.dataSource.indexOf('混合') >= 0) srcLabel = 'ETF+估值';
+    else if (d.dataSource.indexOf('动量') >= 0) srcLabel = '仅动量';
+    else if (d.dataSource.indexOf('live') === 0) srcLabel = '实时';
     $('secCards').innerHTML = lead ? (
       kpi('榜首赛道', lead.name, lead.score >= 0 ? 'up' : 'down') +
       kpi('榜首综合分', (lead.score >= 0 ? '+' : '') + lead.score, lead.score >= 0 ? 'up' : 'down') +
       kpi('候选池', d.total + ' 只', '') +
-      kpi('数据来源', d.dataSource.indexOf('live') === 0 ? '实时' : '模拟', '')
+      kpi('数据来源', srcLabel, srcLabel === '模拟' ? '' : 'up')
     ) : '';
 
     var labels = top.map(function (t) { return t.name; });
@@ -213,17 +218,26 @@
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return '综合分 ' + c.raw; } } } }, scales: { x: { title: { display: true, text: '综合得分 (红涨绿跌)' } } } }
     });
 
+    function srcTag(t) {
+      if (t.dataSource === 'etf') return '<span class="tag-up">ETF实时</span>';
+      if (t.dataSource === 'estimate') return '基金估值';
+      if (t.dataSource === 'momentum') return '动量兜底';
+      return '—';
+    }
     var rows = top.map(function (t, i) {
       var cp = t.changePct == null ? '—' : (t.changePct >= 0 ? '+' : '') + t.changePct + '%';
+      var etf = t.etfName ? t.etfName : '—';
       return '<tr><td>' + (i + 1) + '</td><td>' + t.name + '</td><td>' + (t.sector || '') + '</td>' +
         '<td class="' + (t.changePct >= 0 ? 'tag-up' : 'tag-down') + '">' + cp + '</td>' +
+        '<td>' + etf + '</td>' +
+        '<td>' + srcTag(t) + '</td>' +
         '<td class="' + (t.mom5 >= 0 ? 'tag-up' : 'tag-down') + '">' + (t.mom5 >= 0 ? '+' : '') + t.mom5 + '%</td>' +
         '<td class="' + (t.maTrend >= 0 ? 'tag-up' : 'tag-down') + '">' + (t.maTrend >= 0 ? '+' : '') + t.maTrend + '%</td>' +
         '<td class="score ' + (t.score >= 0 ? 'tag-up' : 'tag-down') + '">' + (t.score >= 0 ? '+' : '') + t.score + '</td></tr>';
     }).join('');
-    $('secTable').innerHTML = '<table><thead><tr><th>排名</th><th>名称</th><th>赛道</th><th>实时估值%</th><th>近5日%</th><th>均线偏离%</th><th>综合分</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    $('secTable').innerHTML = '<table><thead><tr><th>排名</th><th>名称</th><th>赛道</th><th>实时涨跌%</th><th>对应ETF</th><th>实时源</th><th>近5日%</th><th>均线偏离%</th><th>综合分</th></tr></thead><tbody>' + rows + '</tbody></table>';
     $('secMeta').textContent = '数据=' + d.dataSource + ' ｜ 截至=' + d.asOf;
-    showStatus('实时赛道综合得分 Top' + top.length + ' ｜ 综合分 = 0.6×实时估值% + 0.25×近5日% + 0.15×均线偏离% ｜ 供 advisor 动态选基 Top-N');
+    showStatus('实时赛道综合得分 Top' + top.length + ' ｜ ETF实时成交价优先(0.7×涨跌+0.2×近5日+0.1×均线), 基金估值/动量兜底 ｜ 供 advisor 动态选基 Top-N');
   }
 
   // ---------- 工具 ----------

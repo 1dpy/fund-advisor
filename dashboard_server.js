@@ -170,11 +170,14 @@ async function sectorsData(mode) {
         rt.fetchRealtimeSectorScores({ days: 12, delayMs: 60 }),
         new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000)),
       ]);
-      // 若整批抓取失败(沙箱DNS被拦等) → 分数全为 -999, 回退合成
+      // 整批失败(沙箱DNS被拦等) → 分数全 -999, 回退合成
       if (res && res.length && res.some((a) => a.score > -999)) {
         scores = res;
-        const withEst = res.filter((a) => a.changePct != null).length;
-        dataSource = withEst > 0 ? 'live' : 'live (仅动量, 实时估值N/A)';
+        const etfCnt = res.filter((a) => a.dataSource === 'etf').length;
+        const liveCnt = res.filter((a) => a.dataSource === 'etf' || a.dataSource === 'estimate').length;
+        dataSource = etfCnt === res.length
+          ? 'live (ETF实时成交价)'
+          : (liveCnt > 0 ? 'live (ETF+估值混合)' : 'live (仅动量兜底)');
       } else dataSource = 'synthetic (实盘抓取失败, 已回退)';
     } catch (e) { dataSource = 'synthetic (实盘抓取失败, 已回退)'; }
   }
