@@ -119,7 +119,7 @@ async function main() {
     delete require.cache[require.resolve('./src/us_market_v2')];
   }
 
-  const quiet = dingMode;
+  const quiet = dingMode || showJson;
 
   try {
     // 0. 持仓输入
