@@ -166,9 +166,10 @@ const PREFERRED_SECTORS = [
 const MAX_DEPLOY_SECTORS = 8;
 
 // 实时行情驱动动态选基: 每天盘前读实时估值+动量, 挑"当下最强"的 N 只卖出/买入推荐
-//   (用户 2026-07-22: 不要固定哪几只, 先读当时行情再推荐其中 4 个)
 //   仅在提供 realtimeScores 时生效; 否则回退到上面固定优先级等权分散
-const REALTIME_PICK_COUNT = 4;
+//   默认值与持续自我迭代结论对齐: 样本外最优 topK=2 (holdout +13.36%)。
+//   运行时若 data/meta_params.json 存在, 以其 selfParams.topK 为准 (由 continual_self_iterate 刷新)。
+const REALTIME_PICK_COUNT = 2;
 
 // 技术参数
 const TECH_CONFIG = {

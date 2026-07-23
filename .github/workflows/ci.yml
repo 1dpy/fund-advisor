@@ -37,10 +37,10 @@ jobs:
         run: npm install
 
       - name: 模块加载 + 离线冒烟测试
-        run: node --trace-warnings test/smoke.js > /tmp/smoke.log 2>&1
+        run: node --trace-warnings test/smoke.js 2>&1 | tee /tmp/smoke.log
 
       - name: 离线量化校验 (因子库 / walk-forward / 敏感性 / EWMA)
-        run: node --trace-warnings test/offline_quant.js > /tmp/offline.log 2>&1
+        run: node --trace-warnings test/offline_quant.js 2>&1 | tee /tmp/offline.log
 
       - name: 多策略回测 + 生成 HTML 报告 (联网抓取, 允许失败)
         continue-on-error: true
@@ -76,6 +76,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           {
             echo "## CI 失败诊断 @ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "- node: $(node -v) | npm: $(npm -v) | os: $(uname -a)"
@@ -84,8 +85,8 @@ jobs:
             fail=0; for f in $(find . -name '*.js' -not -path './node_modules/*'); do node --check "$f" 2>&1 || { echo "ERR: $f"; fail=1; }; done; [ $fail -eq 0 ] && echo "语法全过"
             echo ""
             echo '```'
-            echo "===== smoke.log ====="; cat /tmp/smoke.log 2>/dev/null
-            echo "===== offline.log ====="; cat /tmp/offline.log 2>/dev/null
+            echo "===== smoke.log ====="; cat /tmp/smoke.log 2>/dev/null || echo "(无 smoke.log)"
+            echo "===== offline.log ====="; cat /tmp/offline.log 2>/dev/null || echo "(无 offline.log)"
             echo '```'
           } > /tmp/diag.md
           gh issue create --title "CI 失败诊断 $(date -u +%Y%m%dT%H%M%SZ)" --body-file /tmp/diag.md || echo "(issue 创建失败，忽略)"
