@@ -8,6 +8,9 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -34,10 +37,10 @@ jobs:
         run: npm install
 
       - name: 模块加载 + 离线冒烟测试
-        run: node --trace-warnings test/smoke.js 2>&1
+        run: node --trace-warnings test/smoke.js > /tmp/smoke.log 2>&1
 
       - name: 离线量化校验 (因子库 / walk-forward / 敏感性 / EWMA)
-        run: node --trace-warnings test/offline_quant.js 2>&1
+        run: node --trace-warnings test/offline_quant.js > /tmp/offline.log 2>&1
 
       - name: 多策略回测 + 生成 HTML 报告 (联网抓取, 允许失败)
         continue-on-error: true
@@ -67,3 +70,22 @@ jobs:
           name: backtest-report
           path: reports/*.html
           if-no-files-found: ignore
+
+      - name: 失败诊断：汇总日志并发 Issue (供 AI 读取)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "## CI 失败诊断 @ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- node: $(node -v) | npm: $(npm -v) | os: $(uname -a)"
+            echo ""
+            echo "### 语法检查"
+            fail=0; for f in $(find . -name '*.js' -not -path './node_modules/*'); do node --check "$f" 2>&1 || { echo "ERR: $f"; fail=1; }; done; [ $fail -eq 0 ] && echo "语法全过"
+            echo ""
+            echo '```'
+            echo "===== smoke.log ====="; cat /tmp/smoke.log 2>/dev/null
+            echo "===== offline.log ====="; cat /tmp/offline.log 2>/dev/null
+            echo '```'
+          } > /tmp/diag.md
+          gh issue create --title "CI 失败诊断 $(date -u +%Y%m%dT%H%M%SZ)" --body-file /tmp/diag.md || echo "(issue 创建失败，忽略)"
