@@ -15,7 +15,8 @@ jobs:
       - name: 设置 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # 显式锁 Node 24 (GitHub 2025-09 弃用 20, 自动强升会改变 V8 行为, 易诱发隐藏差异)
+          node-version: '24'
 
       - name: 语法检查 (所有 JS 文件)
         run: |
@@ -33,10 +34,10 @@ jobs:
         run: npm install
 
       - name: 模块加载 + 离线冒烟测试
-        run: node test/smoke.js
+        run: node --trace-warnings test/smoke.js 2>&1
 
       - name: 离线量化校验 (因子库 / walk-forward / 敏感性 / EWMA)
-        run: node test/offline_quant.js
+        run: node --trace-warnings test/offline_quant.js 2>&1
 
       - name: 多策略回测 + 生成 HTML 报告 (联网抓取, 允许失败)
         continue-on-error: true
