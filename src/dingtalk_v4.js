@@ -8,9 +8,44 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-// ⚠️ 安全: webhook 必须从环境变量读取, 切勿硬编码 token 提交到仓库
-const WEBHOOK = process.env.DINGTALK_WEBHOOK || '';
-const DING_ERR_LOG = path.join(__dirname, '..', 'data', 'ding_last_error.log');
+// ⚠️ 安全: webhook 绝不可硬编码进代码/提交仓库。来源优先级:
+//   1) 环境变量 DINGTALK_WEBHOOK (宿主注入时优先)
+//   2) 本地 .env 文件 (gitignored, 行: DINGTALK_WEBHOOK=https://...)
+//   3) 本地 data/dingtalk_webhook.txt (gitignored, 仅含一行 URL)
+// 自动化宿主环境通常不注入 env, 故必须依赖本地 gitignored 文件兜底。
+const PROJECT_ROOT = path.join(__dirname, '..');
+const DING_ERR_LOG = path.join(PROJECT_ROOT, 'data', 'ding_last_error.log');
+
+function resolveWebhook() {
+  // 1) 环境变量
+  if (process.env.DINGTALK_WEBHOOK && process.env.DINGTALK_WEBHOOK.trim()) {
+    return process.env.DINGTALK_WEBHOOK.trim();
+  }
+  // 2) .env 文件
+  const envPath = path.join(PROJECT_ROOT, '.env');
+  if (fs.existsSync(envPath)) {
+    try {
+      const content = fs.readFileSync(envPath, 'utf8');
+      for (const raw of content.split('\n')) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#')) continue;
+        const m = line.match(/^DINGTALK_WEBHOOK\s*=\s*(.*)$/);
+        if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+      }
+    } catch (_) { /* 忽略解析异常, 继续下一来源 */ }
+  }
+  // 3) 专用明文文件 (仅一行 URL)
+  const txtPath = path.join(PROJECT_ROOT, 'data', 'dingtalk_webhook.txt');
+  if (fs.existsSync(txtPath)) {
+    try {
+      const v = fs.readFileSync(txtPath, 'utf8').trim().split('\n')[0].trim();
+      if (v) return v;
+    } catch (_) { /* 忽略 */ }
+  }
+  return '';
+}
+
+const WEBHOOK = resolveWebhook();
 
 function appendDingError(reason) {
   try {
@@ -21,13 +56,22 @@ function appendDingError(reason) {
 
 async function sendMarkdown(title, text) {
   if (!WEBHOOK) {
-    const msg = '未配置 DINGTALK_WEBHOOK 环境变量 (webhook 为空), 跳过推送';
+    const msg = '未配置 DINGTALK_WEBHOOK (环境变量为空 且 本地 .env / data/dingtalk_webhook.txt 均缺失), 跳过推送';
     console.warn('⚠️ ' + msg);
     appendDingError(msg);
     return false;
   }
   try {
-    await axios.post(WEBHOOK, { msgtype: 'markdown', markdown: { title, text } }, { timeout: 10000 });
+    const resp = await axios.post(WEBHOOK, { msgtype: 'markdown', markdown: { title, text } }, { timeout: 10000 });
+    // 钉钉成功标志: 响应体 errcode === 0。HTTP 4xx/5xx 不会让 axios 抛错, 必须显式检查响应体,
+    // 否则 token 失效/被限流时仍会返回 true, 造成"发了但没收到"的假成功。
+    const body = resp && resp.data ? resp.data : {};
+    if (body.errcode !== undefined && body.errcode !== 0) {
+      const reason = `钉钉接口拒绝: errcode=${body.errcode}, errmsg=${(body.errmsg || '').toString().slice(0, 80)}`;
+      console.warn('❌ ' + reason);
+      appendDingError(reason);
+      return false;
+    }
     return true;
   } catch (e) {
     const httpInfo = e.response ? ` (HTTP ${e.response.status})` : '';
