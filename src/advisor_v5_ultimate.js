@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { BUDGET, WATCHLIST, FEE_CONFIG, RISK_CONFIG, STRATEGY, STRATEGY_CONFIG, PREFERRED_SECTORS, MAX_DEPLOY_SECTORS, REALTIME_PICK_COUNT } = require('./config');
+const RM = require('./risk_metrics');
 
 const ROOT = path.join(__dirname, '..');
 const HOLDINGS_PATH = path.join(ROOT, 'holdings.json');
@@ -210,9 +211,18 @@ function pickPreferredSector(funds, totalAsset, mlPicks, realtimeScores) {
       const held = funds.find(f => f.code === r.code);
       const w = held ? (held.value || 0) / (totalAsset || 1) : 0;
       if (w >= (r.maxWeight || 0.3)) continue; // 已满, 跳过
+      // 凯利风险预算权重: 胜率高/赔率好的赛道多配, 受 maxSinglePosition 与等权保底约束
+      //   (非实时风险数据则回退等权 weight=1, 不影响离线/回退路径)
+      let weight = 1;
+      if (r.risk && r.risk.winRate > 0 && r.risk.payoffRatio > 0) {
+        const kf = RM.kellyFractional(r.risk.winRate, r.risk.payoffRatio, 0.5); // 半凯利
+        const kellyW = Math.max(0, Math.min(RISK_CONFIG.maxSinglePosition, kf));
+        // 相对权重映射: kellyW∈[0,0.2] -> weight∈[0.4,1.2], 与等权混合保留分散
+        weight = Math.max(0.4, Math.min(1.2, 0.4 + 4 * kellyW));
+      }
       picks.push({
         code: r.code, name: r.name, sector: r.sector, maxWeight: r.maxWeight,
-        weight: 1, realtime: true, changePct: r.changePct, score: r.score, mom5: r.mom5,
+        weight, kellyWeight: weight, realtime: true, changePct: r.changePct, score: r.score, mom5: r.mom5, risk: r.risk,
       });
       if (picks.length >= EFFECTIVE_PICK_COUNT) break; // 动态挑最强的 N 只 (由自我迭代元参数 topK 决定)
     }

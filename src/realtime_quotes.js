@@ -24,8 +24,18 @@
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
-const { PREFERRED_SECTORS } = require('./config');
+const { PREFERRED_SECTORS, RISK_AWARE_SCORING, RISK_SCORE_WEIGHT } = require('./config');
 const { fetchNavHistory } = require('./ml_sector_selector');
+const RM = require('./risk_metrics');
+
+// 截面 z-score (数组 -> 标准化, 缺省安全)
+function zscore(arr) {
+  const n = arr.length;
+  if (n < 2) return arr.map(() => 0);
+  const m = arr.reduce((s, v) => s + v, 0) / n;
+  const sd = Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1)) || 1e-9;
+  return arr.map(v => (v - m) / sd);
+}
 
 const ROOT = path.join(__dirname, '..');
 const META_FILE = path.join(ROOT, 'data', 'meta_params.json');
@@ -194,6 +204,19 @@ async function fetchRealtimeSectorScores(opts = {}) {
     const navs = await fetchNavHistory(s.code, days, true).catch(() => []);
     if (navs && navs.length) mom = calcMomentum(navs);
 
+    // 风险画像 (索提诺/最大回撤/凯利), 由历史净值序列算; nav 不足(>=30点)则跳过
+    let risk = null;
+    try {
+      const navArr = (navs || []).filter(n => n && n.nav > 0).map(n => n.nav);
+      if (navArr.length >= 30) {
+        const prof = RM.computeRiskProfile(navArr, { rf: 0.02 });
+        if (prof) risk = {
+          sortino: prof.sortino, mdd: prof.mdd, calmar: prof.calmar,
+          winRate: prof.winRate, payoffRatio: prof.payoffRatio, kelly: prof.kelly,
+        };
+      }
+    } catch (e) { risk = null; }
+
     // 基金盘中估值 (次兜底)
     const est = await fetchLiveEstimate(s.code).catch(() => null);
 
@@ -233,11 +256,34 @@ async function fetchRealtimeSectorScores(opts = {}) {
       changePct: etfChange != null ? etfChange : (est ? est.changePct : null),
       gztime: etfChange != null ? 'etf-realtime' : (est ? est.gztime : ''),
       etfName, mom5: mom.mom5, maTrend: mom.maTrend,
-      score: Math.round(score * 100) / 100, dataSource: source,
+      score: Math.round(score * 100) / 100, dataSource: source, risk,
     });
 
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
   }
+
+  // —— 风险感知混合 (赚钱优先·让选基"看病", 不全追高动量) ——
+  // 截面标准化索提诺与最大回撤, 合成 riskZ = z(索提诺) + z(回撤);
+  // 深回撤(mdd更负)-> z(mdd)为负 -> riskZ 降低 -> 综合分被压; 高索提诺则抬升。
+  // 最终分 = 动量分*(1-W) + W*(动量分 + riskZ*动量分标准差), 风险最多修正 W=15% 的动量分差。
+  if (RISK_AWARE_SCORING) {
+    const riskSects = out.filter((s) => s.risk && s.risk.sortino != null);
+    if (riskSects.length >= 2) {
+      const zSort = zscore(riskSects.map((s) => s.risk.sortino));
+      const zMdd = zscore(riskSects.map((s) => s.risk.mdd));
+      riskSects.forEach((s, i) => { s.riskZ = +(zSort[i] + zMdd[i]).toFixed(3); });
+      const bases = out.filter((s) => s.score > -900).map((s) => s.score);
+      const baseStd = RM.stdev(bases) || 1;
+      const W = RISK_SCORE_WEIGHT;
+      for (const s of out) {
+        const rz = s.riskZ || 0;
+        s.baseScore = s.score;
+        s.score = +(s.score * (1 - W) + W * (s.score + rz * baseStd)).toFixed(3);
+        s.riskAdjScore = s.score;
+      }
+    }
+  }
+
   out.sort((a, b) => b.score - a.score);
   return out;
 }

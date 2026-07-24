@@ -42,6 +42,9 @@ jobs:
       - name: 离线量化校验 (因子库 / walk-forward / 敏感性 / EWMA)
         run: node --trace-warnings test/offline_quant.js 2>&1 | tee /tmp/offline.log
 
+      - name: 风险指标库单测 (索提诺/MDD/凯利/IR/VaR/CVaR)
+        run: node --trace-warnings test/risk_metrics.test.js 2>&1 | tee /tmp/risk.log
+
       - name: 多策略回测 + 生成 HTML 报告 (联网抓取, 允许失败)
         continue-on-error: true
         run: |
@@ -87,6 +90,7 @@ jobs:
             echo '```'
             echo "===== smoke.log ====="; cat /tmp/smoke.log 2>/dev/null || echo "(无 smoke.log)"
             echo "===== offline.log ====="; cat /tmp/offline.log 2>/dev/null || echo "(无 offline.log)"
+            echo "===== risk.log ====="; cat /tmp/risk.log 2>/dev/null || echo "(无 risk.log)"
             echo '```'
           } > /tmp/diag.md
           gh issue create --title "CI 失败诊断 $(date -u +%Y%m%dT%H%M%SZ)" --body-file /tmp/diag.md || echo "(issue 创建失败，忽略)"
