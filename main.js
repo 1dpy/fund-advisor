@@ -46,6 +46,7 @@ const { applyAdvice } = require('./src/apply_advice');
 const { recordDecision } = require('./src/evolution');
 const { batchFetchHistory, getCachedHistory } = require('./src/data_collector');
 const { walkForwardValidation } = require('./src/quant/walk_forward');
+const { runStrategyDiagnose } = require('./src/strategy_diagnose');
 
 async function interactiveInputHoldings() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -111,6 +112,7 @@ async function main() {
   const trainMode = args.includes('--train');
   const ultimateMode = args.includes('--ultimate');
   const aggressiveMode = args.includes('--aggressive');
+  const strategyMode = args.includes('--strategy');
 
   if (dingMode || args.includes('--fresh')) {
     delete require.cache[require.resolve('./src/news')];
@@ -120,6 +122,14 @@ async function main() {
   }
 
   const quiet = dingMode || showJson;
+
+  // 策略诊断 (TM/HM 择时 · 均线 · 美林时钟): 只读持仓净值, 不写账本, 独立通道
+  if (strategyMode) {
+    const strategyIdx = args.indexOf('--strategy');
+    const proxy = args[strategyIdx + 1] && !args[strategyIdx + 1].startsWith('--') ? args[strategyIdx + 1] : null;
+    await runStrategyDiagnose({ marketProxyCode: proxy });
+    return;
+  }
 
   try {
     // 0. 持仓输入
