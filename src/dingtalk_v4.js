@@ -6,18 +6,36 @@
  */
 
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 // ⚠️ 安全: webhook 必须从环境变量读取, 切勿硬编码 token 提交到仓库
 const WEBHOOK = process.env.DINGTALK_WEBHOOK || '';
+const DING_ERR_LOG = path.join(__dirname, '..', 'data', 'ding_last_error.log');
+
+function appendDingError(reason) {
+  try {
+    const line = `[${new Date().toISOString()}] 钉钉发送失败: ${reason}\n`;
+    fs.appendFileSync(DING_ERR_LOG, line);
+  } catch (_) { /* 忽略日志写入异常 */ }
+}
 
 async function sendMarkdown(title, text) {
   if (!WEBHOOK) {
-    console.warn('⚠️ 未配置 DINGTALK_WEBHOOK 环境变量, 跳过钉钉推送。');
+    const msg = '未配置 DINGTALK_WEBHOOK 环境变量 (webhook 为空), 跳过推送';
+    console.warn('⚠️ ' + msg);
+    appendDingError(msg);
     return false;
   }
   try {
     await axios.post(WEBHOOK, { msgtype: 'markdown', markdown: { title, text } }, { timeout: 10000 });
     return true;
-  } catch (e) { return false; }
+  } catch (e) {
+    const httpInfo = e.response ? ` (HTTP ${e.response.status})` : '';
+    const reason = `axios 请求失败: ${e.message}${httpInfo}`;
+    console.warn('❌ ' + reason);
+    appendDingError(reason);
+    return false;
+  }
 }
 
 function formatDingtalkV4(decisions) {
