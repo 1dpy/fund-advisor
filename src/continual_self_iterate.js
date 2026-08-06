@@ -24,6 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const core = require('./quant_lab_core');
+const mcal = require('./ml_calibrate');
 const { fetchNavHistory } = require('./ml_sector_selector');
 const { PREFERRED_SECTORS } = require('./config');
 
@@ -155,6 +156,19 @@ async function runContinual(opts = {}) {
   }
   if (!si) return { error: '数据不足以自我迭代', dataSource };
 
+  // ML 模型校准层：按样本外 IC / TopK 命中率选择预测周期与正则强度，
+  // 结果写入 data/ml_calibration.json，选基时直接消费。
+  let mlCal = null;
+  try {
+    const N = data.commonDates.length;
+    const start = N >= 210 ? 90 : Math.max(60, Math.floor(N / 4));
+    const ho = N >= 240 ? 60 : Math.max(20, Math.min(60, Math.floor(N / 6)));
+    if (N >= 180 && data.codes.length >= 3) {
+      mlCal = mcal.calibrateWalkForward(data.closesByCode, data.codes, { start, holdout: ho, foldStep: 20, embargo: 5, topK: 3 });
+      if (mlCal) mcal.saveCalibration(mlCal);
+    }
+  } catch (e) { mlCal = null; }
+
   const sp = (si.holdout && si.holdout.selfParams) || { momentum: 0.5, valuation: 0.3, sentiment: 0.2, topK: 4 };
   const oosSelf = si.holdoutCurves && si.holdoutCurves.self ? core.stats(si.holdoutCurves.self) : null;
   const oosStatic = si.holdoutCurves && si.holdoutCurves.static ? core.stats(si.holdoutCurves.static) : null;
@@ -175,6 +189,18 @@ async function runContinual(opts = {}) {
     },
     oosSelf, oosStatic, degDelta,
     folds: si.folds ? si.folds.length : (si.nFolds || null),
+    mlCalibration: mlCal ? {
+      avgTestIC: mlCal.avgTestIC,
+      avgHitRate: mlCal.avgHitRate,
+      degradation: mlCal.degradation,
+      confidence: mlCal.confidence,
+      finalParams: mlCal.finalParams,
+      algorithm: mlCal.finalAlgorithm,
+      algorithms: mlCal.algorithms,
+      selection: mlCal.selection,
+      holdout: mlCal.holdout,
+      nSamples: mlCal.nSamples,
+    } : null,
   };
 
   try { fs.writeFileSync(META_FILE, JSON.stringify(meta, null, 2)); } catch (e) {}
@@ -197,6 +223,10 @@ if (require.main === module) {
       console.log('  训练样本 :', m.nDays, '天 /', m.codes.length, '只 / 冻结holdout', m.holdoutDays, '天');
       console.log('  元参数   : momentum=' + m.selfParams.momentum + ' valuation=' + m.selfParams.valuation + ' sentiment=' + m.selfParams.sentiment + ' topK=' + m.selfParams.topK);
       console.log('  holdout  : self=' + (m.oosSelf ? m.oosSelf.total + '%' : '-') + ' static=' + (m.oosStatic ? m.oosStatic.total + '%' : '-') + ' Δ=' + m.degDelta + '%');
+      if (m.mlCalibration) {
+        const algoName = m.mlCalibration.algorithm === 'ranking_boost' ? 'RankingBoost' : m.mlCalibration.algorithm === 'adaptive_ensemble' ? 'Adaptive-ASE' : 'Ridge';
+        console.log('  ML校准   : 算法=' + algoName + ' IC=' + m.mlCalibration.avgTestIC + ' 命中率=' + m.mlCalibration.avgHitRate + ' 降级=' + m.mlCalibration.degradation + ' 置信度=' + m.mlCalibration.confidence + ' 参数=' + m.mlCalibration.finalParams.horizon + 'd/λ' + m.mlCalibration.finalParams.lambda);
+      }
       console.log('  已写入   :', META_FILE);
     })
     .catch((e) => { console.error('❌', e); process.exit(1); });

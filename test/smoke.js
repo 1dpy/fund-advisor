@@ -1,6 +1,7 @@
 // 离线冒烟测试：验证核心模块可加载，且决策引擎能在不联网情况下产出操作建议。
 // 用途：CI 与本地快速校验，不依赖实时行情 / 历史净值网络请求。
 const assert = require('assert');
+const fs = require('fs');
 
 const { generateUltimatePortfolioAdvice } = require('../src/advisor_v5_ultimate');
 const rt = require('../src/realtime_quotes');
@@ -30,20 +31,27 @@ const fakeScores = [
 
 const advice = generateUltimatePortfolioAdvice(null, null, fakeScores);
 
+// 自迭代 topK 是动态元参数，测试不允许写死，否则自我迭代更新后 smoke 会误报。
+let metaTopK = 2;
+try {
+  const meta = JSON.parse(fs.readFileSync(require('path').join(__dirname, '..', 'data', 'meta_params.json'), 'utf8'));
+  metaTopK = meta && meta.selfParams && meta.selfParams.topK ? meta.selfParams.topK : 2;
+} catch (e) { /* 无元参数时用默认 2 */ }
+
 assert.ok(Array.isArray(advice.operations), 'operations 应为数组');
 assert.ok(Array.isArray(advice.realtimePicks), 'realtimePicks 应为数组');
-assert.strictEqual(advice.realtimePicks.length, 2,
-  '应动态挑选当日最强 2 只 (自迭代 topK=2), 实际=' + advice.realtimePicks.length);
+assert.strictEqual(advice.realtimePicks.length, metaTopK,
+  `应动态挑选当日最强 ${metaTopK} 只 (自迭代 topK=${metaTopK}), 实际=` + advice.realtimePicks.length);
 
 // 验证挑出的确实是综合分最高的前 2 只（数据驱动 topK，非写死固定基金）
 const picked = advice.realtimePicks.map(p => p.code).sort();
-const expect = ['011609', '013402'].sort();
+const expect = fakeScores.slice(0, metaTopK).map(p => p.code).sort();
 assert.deepStrictEqual(picked, expect,
-  '动态选基应取综合分 Top2 (科创/恒生科技)');
+  `动态选基应取综合分 Top${metaTopK}`);
 
 console.log('✅ smoke test 通过');
 console.log('   operations =', advice.operations.length);
-console.log('   realtimePicks(Top2) =', advice.realtimePicks.map(p => `${p.code}:${p.sector}`).join(', '));
+console.log(`   realtimePicks(Top${metaTopK}) =`, advice.realtimePicks.map(p => `${p.code}:${p.sector}`).join(', '));
 
 // 3) 新量化模块可加载且纯函数可用 (不联网)
 assert.strictEqual(typeof fl.compositeScore, 'function', 'factor_library.compositeScore 应导出');

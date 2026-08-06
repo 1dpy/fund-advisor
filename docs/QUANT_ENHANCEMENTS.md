@@ -106,4 +106,17 @@ npm run quant:lab:demo     # 合成数据兜底, 离线生成 HTML 报告
 npm run quant:lab          # 联网(东方财富净值) 跑完整量化实验室
 npm run quant:self:demo    # 离线验证自我迭代 + 更长数据测试集
 npm run quant:self         # 联网(365日多regime) + 自我迭代 + holdout 测试集
+npm run ml:calibrate       # ML 模型校准: RankingBoost / ASE / Ridge 竞争
+npm run ml:calibrate:live  # 使用 data/sector_history.json 校准
 ```
+
+## 九、P6：ML 校准与防过拟合模型竞赛
+
+- **做了什么**：
+  1. `src/quant/ranking_boost.js`：成对排序学习（Pairwise Learning-to-Rank），学习“同一时点基金 A 未来跑赢基金 B 的概率”，用成对逻辑回归 + L2 正则 + 确定性 SGD 训练；
+  2. `src/quant/adaptive_ensemble.js`：Adaptive Random-Subspace Ensemble，随机特征子空间 + bootstrap bagging + 多档 L2 正则，降低单模型对某段特征/样本的依赖；
+  3. `src/ml_calibrate.js`：把 Ridge / RankingBoost / ASE 放进 purged walk-forward，按 **OOS IC − 0.2 × (训练 IC − OOS IC)** 选择最终算法；冻结 holdout 只作最终证据，不自洽回灌；
+  4. `src/ml_sector_selector.js`：根据校准结果自动调整 ML 模型、动量基线和原有 LSTM/Attention/Ensemble 信号权重，ML 跑不过动量基线时自动降权。
+- **对应知识**：Learning-to-Rank、随机子空间 / Bagging、L2 正则、walk-forward 防前视、López de Prado 过拟合量化、模型选择 / 稳健性检验。
+- **导师追问**：为什么不是“哪个算法 IC 高就选哪个”？→ 因为只看 OOS IC 仍可能选中“碰巧在测试窗有效但退化严重”的模型；这里用 **OOS IC − 惩罚 × 退化度** 作为稳健目标，退化大的模型即使 IC 略高也不会被选中。
+- **真实数据验证（2026-08-06，16 只 / 271 天）**：系统最终选中 RankingBoost，样本外 IC=0.0396，Top-K 命中率=0.4042；ASE 原始 IC 更高（0.0449），但过拟合退化惩罚后不如 RankingBoost 稳健，因此未被选中。该机制的价值是“限制过拟合 + 随数据自我迭代”，不是保证收益。

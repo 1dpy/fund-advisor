@@ -8,9 +8,10 @@
 
 ## 🌟 项目亮点
 
-- **实时行情驱动的动态选基**：每天盘前读取 16 只候选赛道的**ETF 真实成交价（秒级）+ 近期动量**，按"持续性强势"动态挑出当日最强 N 只推荐（N 由持续自我迭代的 `topK` 决定，当前实证最优为 2），而非写死固定基金。
+- **实时行情驱动的动态选基**：每天盘前读取 16 只候选赛道的**ETF 真实成交价（秒级）+ 近期动量**，按"持续性强势"动态挑出当日最强 N 只推荐（N 由持续自我迭代的 `topK` 决定，当前实证最优为 3），而非写死固定基金。
 - **多策略融合框架（PROFIT_FIRST）**：以"赚钱优先"为核心，结合等权分散、仓位再平衡与严格风控纪律。
 - **机器学习信号模块**：内置 LSTM、多头注意力机制（Attention）、随机森林、集成学习等模型，对赛道未来收益做预测与选基（研究模式）。
+- **可验证的 ML 模型校准（P6）**：Ridge、RankingBoost（成对排序学习）、Adaptive Random-Subspace Ensemble 在 purged walk-forward 中按“样本外 IC − 过拟合惩罚 × 退化度”自动竞争上岗；IC 不足时自动退回动量/原有信号，校准结果持久化到 `data/ml_calibration.json`。
 - **现代投资组合理论（MPT）引擎**：自研 `portfolio_optimizer` 实现马克维茨均值-方差优化（Monte Carlo 有效前沿 / 最大夏普）、风险平价（等风险贡献），作为"等权分散"的定量增强对比。
 - **交易成本建模**：`cost_model` 精确计入 C 类基金赎回费（随持有天数阶梯）+ 销售服务费，回测收益不再被系统性高估——量化金融研究的基本严谨性。
 - **walk-forward 防前视偏差**：MPT / 风险平价的权重用"截至当日的前 60 日窗口"拟合，再用于未来，杜绝用未来数据预测过去。
@@ -53,6 +54,7 @@ npm run quant:lab:demo     # 离线合成数据演示 (CI 友好)
 npm run quant:self         # 联网 + 自我迭代 + 更长数据测试集
 npm run quant:self:demo    # 离线合成数据演示自我迭代 (CI 友好)
 npm run quant:offline      # 纯函数离线校验 (因子/WF/敏感性/EWMA/自我迭代)
+npm run ml:calibrate       # ML 模型校准 (RankingBoost/ASE/Ridge 竞争, 防过拟合)
 ```
 
 ### P4 — 本地可视化仪表盘（Web Dashboard）
@@ -96,8 +98,24 @@ npm run ui                  # 启动本地仪表盘, 浏览器打开 http://loca
 - agent 能稳定直连的最准实时源 = **① 赛道 ETF 成交价**（交易所真实成交，比基金盘中估值更准，且估值本就由 ETF/持仓推算）。故动态选基以它为活信号。
 - 同花顺基金估值沙箱直连被 DNS 拦截，只能用户本机抓 → `npm run live` 桥接（**可选**，不影响主流程）。
 - 实时综合分（赚钱优先·少追脉冲）= `0.75 × 持续性(近5日动量60% + 均线偏离40%) + 0.25 × 当日ETF实时涨跌%`；若自迭代元参数存在，用其动量/估值权重微调持续性内部占比。当日脉冲仅占 25%，避免追高被套。
-- 部署只数 N = 自迭代 `topK`（当前实证样本外比静态多赚 **+13.36%**，topK=2），由 `advisor_v5` 的 `EFFECTIVE_PICK_COUNT` 落地。
+- 部署只数 N = 自迭代 `topK`（当前实证样本外比静态多赚 **+13.36%**，topK=3），由 `advisor_v5` 的 `EFFECTIVE_PICK_COUNT` 落地。
 - **已接入每日 14:30 自动化**：先 `node src/continual_self_iterate.js` 刷新元参数，再 `node main.js --ultimate --apply --ding` 用更新后的参数出操作单。
+
+### P6 — ML 模型校准与防过拟合模型竞赛
+
+- **RankingBoost（成对排序学习）** `src/quant/ranking_boost.js`：不直接预测“涨多少”，而是学习同一时点基金 A 未来跑赢基金 B 的概率，用成对逻辑回归 + L2 正则 + 确定性小批量 SGD 训练，更贴合 Top-K 选基。
+- **Adaptive Random-Subspace Ensemble** `src/quant/adaptive_ensemble.js`：随机特征子空间 + bootstrap bagging + 多档 L2 正则的集成模型，降低单模型对某段特征/样本的依赖。
+- **Walk-forward ML 校准引擎** `src/ml_calibrate.js`：Ridge / RankingBoost / ASE 统一放进 purged walk-forward，按“样本外 IC − 0.2 × 训练/测试退化度”选择最终算法；冻结 holdout 只作最终证据，不自洽回灌。
+- **自适应融合**：`src/ml_sector_selector.js` 会根据校准结果自动调整 ML 模型、动量基线和原有 LSTM/Attention/Ensemble 信号的权重；ML 跑不过动量基线时自动降权，避免“装了模型反而拖累决策”。
+- **持久化**：校准结果写入 `data/ml_calibration.json`，仪表盘新增 `GET /api/mlcalibration` 展示最终算法、IC、命中率、算法选择目标。
+
+```bash
+npm run ml:calibrate         # 用本地真实净值校准（无网络时自动合成演示）
+npm run ml:calibrate:live    # 使用 data/sector_history.json 校准
+npm run self:iterate         # 完整持续自我迭代（会同时刷新 ML 校准）
+```
+
+> 真实数据验证（2026-08-06，16 只赛道基金 / 271 天）：系统自动选中 RankingBoost，样本外 IC=0.0396，Top-K 命中率=0.4042；ASE 原始 IC 更高但过拟合退化惩罚后不如 RankingBoost 稳健，因此未被选中。此机制的价值是“限制过拟合 + 随数据自我迭代”，不是保证收益。
 
 
 
@@ -109,7 +127,7 @@ npm run ui                  # 启动本地仪表盘, 浏览器打开 http://loca
 |------|------|
 | 运行时 | Node.js (CommonJS) |
 | 网络 | axios（行情 / 净值抓取） |
-| 量化模型 | 自研 `src/quant/`：LSTM、Attention、RandomForest、Ensemble、Walk-forward |
+| 量化模型 | 自研 `src/quant/`：LSTM、Attention、RandomForest、Ensemble、**RankingBoost（成对排序学习）**、**Adaptive Random-Subspace Ensemble**、Walk-forward |
 | 组合优化 | 自研 `src/portfolio_optimizer.js`：马克维茨均值-方差（Monte Carlo 有效前沿 / 最大夏普）、风险平价、**EWMA 指数加权协方差**风险平价 |
 | 多因子库 | 自研 `src/factor_library.js`：动量 / 估值（净值历史分位代理）/ 情绪 三大类因子，截面 z-score 标准化 + 加权合成 |
 | 严格回测 | 自研 `src/walk_forward_pro.js`：折叠式 walk-forward 防前视 + **过拟合退化度检测**；`backtest_quant_lab.js` 产出综合报告 |
@@ -131,7 +149,7 @@ stock-fund-advisor/
 ├── main.js                    # 入口：命令行调度 (--ultimate / --ml / --apply / --ding)
 ├── src/
 │   ├── advisor_v5_ultimate.js # 终极决策引擎 (PROFIT_FIRST 框架)
-│   ├── realtime_quotes.js     # 实时行情抓取 + 动态选基 (Top4)
+│   ├── realtime_quotes.js     # 实时行情抓取 + 动态选基 (TopN, 自迭代 topK)
 │   ├── ml_sector_selector.js  # ML 选基 (研究模式)
 │   ├── sentiment_engine.js    # 市场情绪引擎 (恐慌→逆向买入)
 │   ├── config.js              # 策略参数 / 16 只赛道池配置
@@ -148,6 +166,9 @@ stock-fund-advisor/
 │   ├── decision_explain.js    # 决策可解释归因 (因子贡献→人话)
 │   ├── llm_report.js          # LLM 解读 + 多Agent多空辩论 (环境门控, AI 方向)
 │   ├── quant/                 # 量化 ML 模块 (LSTM / Attention / RF / 集成)
+│   │   ├── ranking_boost.js   # 成对排序学习 (Learning-to-Rank)
+│   │   ├── adaptive_ensemble.js # 随机特征子空间 + Bagging 集成
+│   ├── ml_calibrate.js        # walk-forward ML 校准 / 模型竞争 / 防过拟合
 │   └── ...                    # 历史版本 advisor_v1~v6、解析器、报告器等
 ├── backtest_model_compare.js  # 多策略回测对比 (MPT/风险平价/等权/动量)
 ├── backtest_quant_lab.js      # 量化实验室: 因子模型+严格WF+敏感性热力图+阈值再平衡 (HTML报告)
@@ -167,7 +188,7 @@ stock-fund-advisor/
 graph TD
     A[实时行情 / 历史净值<br/>东方财富 · 同花顺] --> B[情绪引擎 + ML 信号]
     B --> C[决策引擎 advisor_v5_ultimate<br/>PROFIT_FIRST 框架]
-    C --> D[动态选基 realtime_quotes<br/>综合分排序取 Top4]
+    C --> D[动态选基 realtime_quotes<br/>综合分排序取 TopN]
     C --> E[风控 + 仓位再平衡]
     D --> F[操作建议单]
     E --> F
@@ -181,9 +202,9 @@ graph TD
 flowchart LR
     S[每日 14:30 触发] --> R[拉实时行情<br/>16只赛道盘中估值+动量]
     R --> Q[综合分排序<br/>0.6×涨幅+0.25×动量+0.15×均线]
-    Q --> T[取 Top4 候选]
+    Q --> T[取 TopN 候选]
     T --> C{仓位检查}
-    C -->|现金超配| B[买入 Top4 等权分散]
+    C -->|现金超配| B[买入 TopN 等权分散]
     C -->|成长不足| U[补成长赛道]
     C -->|整体偏空| G[转黄金防御]
     B --> P[推送钉钉 + 写回持仓]
@@ -196,7 +217,7 @@ flowchart LR
 ## 🎯 核心策略
 
 1. **PROFIT_FIRST（赚钱优先）**：锁定的盈利仓也分批止盈落袋；锁定的亏损仓持有不动不割肉；闲置现金主动部署，不干躺。
-2. **动态选基**：实时综合分（赚钱优先·少追脉冲）= `0.75 × 持续性(近5日动量60% + 均线偏离40%) + 0.25 × 当日ETF实时涨跌%`，取综合分最高的前 N 只（N = 自迭代 `topK`，当前实证=2，样本外比静态多赚 +13.36%）。
+2. **动态选基**：实时综合分（赚钱优先·少追脉冲）= `0.75 × 持续性(近5日动量60% + 均线偏离40%) + 0.25 × 当日ETF实时涨跌%`，取综合分最高的前 N 只（N = 自迭代 `topK`，当前实证=3，样本外比静态多赚 +13.36%）。
 3. **风险控制**：单赛道仓位上限、科技集中度阈值、压舱石（QDII）锁仓永不动；绝对禁止补仓摊平 / 追高买回 / 恐慌割肉。
 
 ---

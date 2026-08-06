@@ -1,7 +1,7 @@
 {
   "name": "stock-fund-advisor",
-  "version": "6.1.0",
-  "description": "A股基金智能投资决策系统 V6 — 实时动态选基 + 多因子库(动量/估值/情绪) + 严格 walk-forward + 参数敏感性热力图 + 阈值再平衡 + EWMA风险平价 + 自我迭代元优化(在线正则化+滚动扩展+holdout) + 交易成本建模 + LLM多Agent辩论/决策归因 (AI × 量化金融)",
+  "version": "6.2.0",
+  "description": "A股基金智能投资决策系统 V6.2 — 实时动态选基 + 多因子库 + 严格 walk-forward + 参数敏感性 + 阈值再平衡 + EWMA风险平价 + 自我迭代元优化 + ML模型校准(RankingBoost/Adaptive Random-Subspace Ensemble/Ridge, 防过拟合) + 交易成本建模 + LLM多Agent辩论/决策归因 (AI × 量化金融)",
   "main": "main.js",
   "scripts": {
     "start": "node main.js",
@@ -19,6 +19,8 @@
     "quant:lab:demo": "node backtest_quant_lab.js --demo",
     "quant:self": "node backtest_self_iterate.js",
     "quant:self:demo": "node backtest_self_iterate.js --demo",
+    "ml:calibrate": "node src/ml_calibrate.js --demo",
+    "ml:calibrate:live": "node src/ml_calibrate.js",
     "ui": "node dashboard_server.js",
     "quant:ui": "node dashboard_server.js",
     "ui:ocr": "npm install tesseract.js && node dashboard_server.js",

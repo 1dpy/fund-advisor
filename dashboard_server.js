@@ -22,6 +22,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const core = require('./src/quant_lab_core');
+const mcal = require('./src/ml_calibrate');
 
 const PORT = process.env.PORT || 8787;
 const ROOT = __dirname;
@@ -136,6 +137,16 @@ async function selfIterateData(mode) {
   const si = core.runSelfIterate(prep.closesByCode, prep.codes, { start: START, rebal: REBAL, foldStep: 20, embargo: 5, holdout: HOLDOUT, sentiment, news });
   if (!si) return { error: '数据不足以自我迭代(需更长历史)' };
   return { mode: prep.dataMode, nDays: prep.N, holdout: HOLDOUT, ...si };
+}
+
+async function mlCalibrationData(mode) {
+  const existing = mcal.loadCalibration();
+  if (existing) return { source: 'data/ml_calibration.json (由 npm run self:iterate 或 npm run ml:calibrate 刷新)', ...existing };
+  // 无缓存时用合成数据快速展示，不污染真实校准文件
+  const prep = await core.prepData({ days: 365, holdout: 60, forceDemo: true });
+  const res = mcal.calibrateWalkForward(prep.closesByCode, prep.codes, { holdout: 60 });
+  if (!res) return { error: '数据不足以校准' };
+  return { source: 'demo (无校准文件，当前为合成演示)', mode: 'demo', ...res };
 }
 
 // ---------- 持仓截图上传 / 确认 ----------
@@ -340,6 +351,11 @@ const server = http.createServer(async (req, res) => {
       const refresh = url.searchParams.get('refresh') === '1';
       return sendJSON(res, refresh ? await selfIterateData(mode) : await getCached('selfiterate_' + mode, mode === 'live' ? 60000 : 300000, () => selfIterateData(mode)));
     }
+    if (p === '/api/mlcalibration') {
+      const mode = url.searchParams.get('mode') === 'live' ? 'live' : 'demo';
+      const refresh = url.searchParams.get('refresh') === '1';
+      return sendJSON(res, refresh ? await mlCalibrationData(mode) : await getCached('mlcalibration_' + mode, mode === 'live' ? 60000 : 300000, () => mlCalibrationData(mode)));
+    }
     if (p === '/api/sectors') {
       const mode = url.searchParams.get('mode') === 'live' ? 'live' : 'demo';
       const refresh = url.searchParams.get('refresh') === '1';
@@ -360,4 +376,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { server, portfolioData, factorsData, backtestData, selfIterateData, sectorsData, holdingImageData, confirmHoldingData };
+module.exports = { server, portfolioData, factorsData, backtestData, selfIterateData, sectorsData, mlCalibrationData, holdingImageData, confirmHoldingData };

@@ -107,4 +107,22 @@ console.log('   折数=', si.folds.length, ' 末折参数=动' + si.holdout.self
 console.log('   holdout 夏普Δ=', si.improvement.holdoutSharpeDelta, ' 平均测试窗夏普 self=' + si.improvement.avgTestSharpeSelf + ' vs static=' + si.improvement.avgTestSharpeStatic);
 console.log('   λ 轨迹=', lambdas.map((v) => v.toFixed(3)).join('→'));
 
-console.log('\n🎉 offline_quant 全部通过 (P0/P1/P2/P3)');
+// 10) P4 ML 校准引擎（walk-forward 样本外 IC / TopK 命中率 / 自适应超参）
+const mcal = require('../src/ml_calibrate');
+const rboost = require('../src/quant/ranking_boost');
+const aen = require('../src/quant/adaptive_ensemble');
+const cr = mcal.calibrateWalkForward(closesByCode, codes, { start: 60, foldStep: 20, embargo: 5, holdout: 40, topK: 3, horizons: [3, 5], lambdas: [0.1, 1] });
+assert.ok(cr && cr.folds && cr.folds.length >= 2, 'ML校准应产出多折');
+assert.ok(Array.isArray(cr.current) && cr.current.length === codes.length, '当前排名应覆盖全部标的');
+assert.ok(isFinite(cr.avgTestIC) && isFinite(cr.avgHitRate), '样本外IC/命中率应为有限数');
+assert.ok(cr.finalParams && typeof cr.finalParams.horizon === 'number', '应输出自适应预测周期');
+assert.ok(cr.trajectory.length === cr.folds.length, '参数轨迹长度应等于折数');
+assert.ok(cr.current.every((r) => r.rank >= 1 && r.rank <= codes.length), '排名应连续合法');
+assert.ok(['ridge', 'ranking_boost', 'adaptive_ensemble'].includes(cr.finalAlgorithm), '应自动选择最终算法');
+assert.ok(typeof rboost.trainRankingBoost === 'function' && typeof rboost.predictRanking === 'function', 'RankingBoost 应导出训练/预测函数');
+assert.ok(typeof aen.trainAdaptiveEnsemble === 'function' && typeof aen.predictAdaptiveEnsemble === 'function' && aen.adaptiveEnsembleConfigs().length >= 2, 'Adaptive Ensemble 应导出训练/预测/配置函数');
+console.log('✅ P4 ML校准校验通过');
+console.log('   折数=', cr.folds.length, ' IC=', cr.avgTestIC, ' 命中率=', cr.avgHitRate, ' 降级=', cr.degradation);
+console.log('   最终参数=horizon' + cr.finalParams.horizon + '/λ' + cr.finalParams.lambda, ' Top5=', cr.current.slice(0, 5).map((r) => r.code + ':' + r.score).join(', '));
+
+console.log('\n🎉 offline_quant 全部通过 (P0/P1/P2/P3/P4)');

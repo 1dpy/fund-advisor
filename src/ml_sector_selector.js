@@ -17,6 +17,7 @@ const { PREFERRED_SECTORS } = require('./config');
 const { predictWithLSTM } = require('./quant/lstm_lite');
 const { predictWithLSTMAttention } = require('./quant/lstm_attention'); // ProMax: 双层LSTM+多头注意力+dropout+L2
 const { ensembleVote } = require('./quant/ensemble');
+const mcal = require('./ml_calibrate');
 
 const ROOT = path.join(__dirname, '..');
 const CACHE_DIR = path.join(ROOT, 'bt_cache');
@@ -160,10 +161,12 @@ function scoreFund(navs, modelType = 'fused') {
  * @returns {Array} 按 mlScore 降序的赛道基金列表
  */
 async function getSectorMLRanking(opts = {}) {
-  const { days = 120, useCache = true, delayMs = 300, modelType = 'fused' } = opts;
+  const { days = 120, useCache = true, delayMs = 300, modelType = 'fused', calibrate = true, calibrateForce = false } = opts;
   const results = [];
+  const navsByCode = {};
   for (const s of PREFERRED_SECTORS) {
     const navs = await fetchNavHistory(s.code, days, useCache);
+    navsByCode[s.code] = navs;
     const closes = navs.map((n) => n.nav);
     if (closes.length < 40) {
       results.push({ code: s.code, name: s.name, sector: s.sector, maxWeight: s.maxWeight, dataPoints: closes.length, mlScore: -999, mlSignal: 'NO_DATA', confidence: 0, predictedReturn5d: null });
@@ -173,7 +176,83 @@ async function getSectorMLRanking(opts = {}) {
     }
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
   }
+
+  // ML 校准层：用 walk-forward 样本外 IC/命中率对 LSTM/Attention/Ensemble 融合分做
+  // 二次加权，而不是永远用人工固定权重。校准结果会被持续自我迭代流程刷新。
+  let calib = null;
+  if (calibrate) {
+    const codes = Object.keys(navsByCode).filter((c) => (navsByCode[c] || []).length >= 80);
+    if (codes.length >= 3) {
+      const closesByCode = {};
+      for (const c of codes) closesByCode[c] = navsByCode[c].map((n) => n.nav);
+      const minN = Math.min(...codes.map((c) => closesByCode[c].length));
+      const ho = Math.max(20, Math.min(60, Math.floor(minN / 6)));
+      calib = calibrateForce
+        ? mcal.calibrateWalkForward(closesByCode, codes, { holdout: ho })
+        : (mcal.loadCalibration() || mcal.calibrateWalkForward(closesByCode, codes, { holdout: ho }));
+    }
+  }
+  const calByCode = {};
+  if (calib && Array.isArray(calib.current)) {
+    for (const r of calib.current) calByCode[r.code] = r;
+  }
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  // 自适应融合权重：样本外 IC 越高，ML 模型权重越大；ML 跑不过动量基线时
+  // 自动退回到“动量/原有信号”，避免“装了 ML 但反而拖累决策”。
+  const ridgeIC = calib && calib.algorithms ? calib.algorithms.ridge.avgTestIC : (calib && typeof calib.avgTestIC === 'number' ? calib.avgTestIC : 0);
+  const pltrIC = calib && calib.algorithms ? calib.algorithms.pltr.avgTestIC : (calib && calib.baseline ? (calib.baseline.pltr && calib.baseline.pltr.avgTestIC) || -1 : -1);
+  const aseIC = calib && calib.algorithms ? (calib.algorithms.adaptive_ensemble && calib.algorithms.adaptive_ensemble.avgTestIC) || -1 : -1;
+  const usePltr = pltrIC > ridgeIC;
+  const useASE = aseIC > Math.max(ridgeIC, pltrIC);
+  const mlVsMom = calib && calib.baseline
+    ? (useASE ? (calib.baseline.aseVsMomentumIC || 0) : usePltr ? (calib.baseline.pltrVsMomentumIC || 0) : (calib.baseline.mlVsMomentumIC || 0))
+    : 0;
+  let calWeight = 0.62, momWeight = 0.15;
+  if (calib && typeof calib.avgTestIC === 'number') {
+    if (mlVsMom < 0) {
+      calWeight = clamp(0.5 + mlVsMom * 4, 0, 0.5);
+      momWeight = clamp(0.5 - mlVsMom * 4, 0, 0.9);
+    } else {
+      calWeight = clamp(0.5 + calib.avgTestIC * 4 + ((calib.avgHitRate || 0.5) - 0.5), 0.35, 0.75);
+      momWeight = 1 - calWeight;
+    }
+  }
+  const modelWeightSum = calWeight + momWeight;
+  const normCalW = modelWeightSum ? calWeight / modelWeightSum : 0.5;
+  const normMomW = modelWeightSum ? momWeight / modelWeightSum : 0.5;
+  for (const r of results) {
+    const cal = calByCode[r.code];
+    if (cal && r.mlScore > -900) {
+      const oldScore = r.mlScore;
+      const calScore = useASE && cal.aseScore != null ? clamp(cal.aseScore, -3, 3)
+        : usePltr && cal.pltrScore != null ? clamp(cal.pltrScore, -3, 3)
+        : clamp(cal.score, -3, 3);
+      const momScore = clamp(cal.momentumScore != null ? cal.momentumScore : 0, -3, 3);
+      const modelScore = normCalW * calScore + normMomW * momScore;
+      r.mlScore = +(0.65 * modelScore + 0.35 * oldScore).toFixed(3);
+      r.mlSignal = r.mlScore > 0.3 ? 'STRONG_BUY' : r.mlScore > 0.1 ? 'BUY' : r.mlScore < -0.3 ? 'STRONG_SELL' : r.mlScore < -0.1 ? 'SELL' : 'HOLD';
+      r.confidence = cal.confidence != null ? Math.round((cal.confidence + (r.confidence || 0)) / 2) : r.confidence;
+      if (cal.predictedReturn5d != null) r.predictedReturn5d = cal.predictedReturn5d;
+      r.calibration = {
+        score: cal.score, prob: cal.prob, rank: cal.rank,
+        direction: cal.direction, predictedReturn5d: cal.predictedReturn5d,
+      };
+    }
+  }
   results.sort((a, b) => b.mlScore - a.mlScore);
+  results.calibration = calib
+    ? {
+        avgTestIC: calib.avgTestIC,
+        avgHitRate: calib.avgHitRate,
+        degradation: calib.degradation,
+        confidence: calib.confidence,
+        finalParams: calib.finalParams,
+        holdout: calib.holdout,
+        baseline: calib.baseline,
+        algorithm: useASE ? 'adaptive_ensemble' : usePltr ? 'ranking_boost' : 'ridge',
+        blendWeight: { ml: +normCalW.toFixed(2), momentum: +normMomW.toFixed(2), existing: 0.35 },
+      }
+    : null;
   return results;
 }
 
@@ -185,6 +264,9 @@ if (require.main === module) {
     const fresh = process.argv.includes('--fresh');
     console.log('=== 赛道 ML 选基排名 (PREFERRED_SECTORS) ===\n');
     const ranking = await getSectorMLRanking({ useCache: !fresh });
+    if (ranking.calibration) {
+      console.log(`\nML 校准: IC=${ranking.calibration.avgTestIC} 命中率=${ranking.calibration.avgHitRate} 置信度=${ranking.calibration.confidence}`);
+    }
     for (const r of ranking) {
       const ret = r.predictedReturn5d != null ? ` pred5d=${r.predictedReturn5d}%` : '';
       console.log(`${r.mlScore >= 0 ? ' ' : ''}${String(r.mlScore).padStart(6)}  [${r.mlSignal.padEnd(10)}] ${r.name}(${r.code}) ${r.sector}  conf=${r.confidence}${ret}  data=${r.dataPoints}`);
