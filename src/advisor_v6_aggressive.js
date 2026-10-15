@@ -9,7 +9,9 @@
  *   4. ATR动态止损 (止损=max(-12%, -2*ATR%), 单周跌15%立即清仓)
  *   5. 移动止盈 (回撤线=max(8%, 1.5*ATR%), 让利润奔跑)
  *   6. 杠铃现金 (保留10-15%做子弹)
- *   7. 绝对底线 (总资产从30日高点回撤>20%→强制转宽基+现金, 防归零)
+ *   7. ❌ 未实现: 原计划"总资产从30日高点回撤>20%→强制转宽基+现金, 防归零"。
+ *      当前无任何组合净值历史数据源(holdings.json 只有当前市值), 无法算30日高点,
+ *      故未接入决策。第0条只实现了"科技全面破位"这一条, 不是总资产回撤保护。
  *
  * 数据: 接入 fetcher 拉历史净值算动量/趋势/ATR; 拉取失败回退V5静态
  * 输出: 纯操作指令 (BUY/SELL/CONVERT/DCA/HOLD)
@@ -27,7 +29,9 @@ const HOLDINGS_PATH = path.join(ROOT, 'holdings.json');
 
 // 激进科技配置
 const AGGRO_CONFIG = {
-  maxTechConcentration: 0.75,   // 科技集中度上限放宽到75% (激进)
+  // 注: 原 maxTechConcentration(0.75) / defenseBaseKeep(0.50) / absoluteDrawdownStop(0.20)
+  //   三项零引用(从未接入任何决策), 已删除。其中 absoluteDrawdownStop 对应的
+  //   "总资产回撤保护"见文件头第7条 —— 缺数据源, 未实现。
   maxSinglePosition: 0.35,      // 单票35% (激进重仓龙头)
   stopLossRatio: -0.12,         // -12%止损 (科技波动大, 比防御版-8%宽)
   weeklyCrashStop: -0.18,       // 单周跌18%立即清仓 (激进版放宽, 避免回调底部割肉)
@@ -45,9 +49,7 @@ const AGGRO_CONFIG = {
   partialTakeProfit: 0.25,      // 浮盈25%部分止盈
   partialTakeProfitPct: 0.30,   // 卖30%
   takeProfitCeiling: 0.60,      // 浮盈60%全卖 (科技弹性大, 天花板抬高)
-  absoluteDrawdownStop: 0.20,   // 总资产从30日高点回撤20%强制转防御
   offenseThreshold: 0.50,       // ≥50%科技基金在均线上方=进攻模式
-  defenseBaseKeep: 0.50,        // 防守模式保留50%科技底仓
 };
 
 // 科技子赛道池 (用于动量轮动)
@@ -207,6 +209,23 @@ function generateAggressiveOps(portfolio, indicators, techTrend) {
   const { funds, cash, totalAsset } = portfolio;
   const t1Info = { description: '场外基金 T+1, 15:00前下单按当日净值' };
 
+  // 现金预算账本: 所有 BUY 必须从这里出账, 保证
+  //   1) 推荐买入总额永不超过实际可用现金 (否则指令无法执行)
+  //   2) 买入后单票不超过 maxSinglePosition (该上限此前只在"是否加仓"判断里出现, 金额侧没生效)
+  let remainingCash = Math.max(0, cash);
+  function take(want) {
+    const amount = Math.min(Math.round(want), Math.round(remainingCash));
+    if (amount < 10) return 0; // 太小不值得下单
+    remainingCash -= amount;
+    return amount;
+  }
+  // 在不突破单票上限前提下, 该基金最多还能买多少
+  function roomToPositionLimit(fund) {
+    const held = funds.find(f => f.code === fund.code);
+    const current = held ? held.value : 0;
+    return Math.max(0, AGGRO_CONFIG.maxSinglePosition * totalAsset - current);
+  }
+
   // 0. 绝对底线: 科技板块全面破位(均线上方<25%) → 只对纯科技降仓, QDII保留作分散;
   //    保留60%底仓等反弹(激进不轻易清仓), 只动仓位最重1只, 限800
   if (!techTrend.offense && techTrend.ratio < 0.25) {
@@ -328,21 +347,27 @@ function generateAggressiveOps(portfolio, indicators, techTrend) {
   }
 
   // 4. 金字塔加仓 (进攻模式 + 浮亏基金 + 有子弹)
+  //    预算账本: pyramidUsed 保证"总额≤现金50%", remainingCash 保证不推荐超出实际可用现金的买入
   if (techTrend.offense) {
+    const pyramidBudget = cash * AGGRO_CONFIG.maxAddCashPct;
+    let pyramidUsed = 0;
     for (const fund of funds) {
       if (handled.has(fund.code)) continue;
       if (fund.profitPct >= 0) continue;
       if (isPendingFullConversion(fund)) continue;
-      // 找到对应加仓档
-      const level = AGGRO_CONFIG.pyramidLevels.find(l => fund.profitPct <= l.trigger);
+      // 取"已跌破的最深一档": 数组由浅到深排列, 必须从深往浅找。
+      //   (历史 bug: 用 find 从浅往深匹配, -3% 档一旦命中就返回, 导致 -6%/-9% 两档永远选不到,
+      //    浮亏30%与浮亏3%拿到同样50%额度, 越跌反而补得越多)
+      const level = AGGRO_CONFIG.pyramidLevels.slice().reverse().find(l => fund.profitPct <= l.trigger);
       if (!level) continue;
-      const addBudget = cash * AGGRO_CONFIG.maxAddCashPct * level.pct;
-      if (addBudget < 10) continue;
       const weight = fund.value / totalAsset;
       if (weight >= AGGRO_CONFIG.maxSinglePosition) continue; // 已达单票上限不加
+      const amount = take(Math.min(pyramidBudget * level.pct, pyramidBudget - pyramidUsed));
+      if (amount <= 0) continue;
+      pyramidUsed += amount;
       operations.push({
-        action: 'BUY', code: fund.code, name: fund.name, amount: Math.round(addBudget),
-        reason: `金字塔加仓: 浮亏${(fund.profitPct*100).toFixed(1)}%触${(level.trigger*100).toFixed(0)}%档, 加¥${Math.round(addBudget)}拉低成本 (进攻模式)`,
+        action: 'BUY', code: fund.code, name: fund.name, amount,
+        reason: `金字塔加仓: 浮亏${(fund.profitPct*100).toFixed(1)}%触${(level.trigger*100).toFixed(0)}%档, 加¥${amount}拉低成本 (进攻模式)`,
         t1: t1Info, urgency: 'MEDIUM',
       });
       handled.add(fund.code);
@@ -350,8 +375,9 @@ function generateAggressiveOps(portfolio, indicators, techTrend) {
   }
 
   // 5. 杠铃: 进攻模式且现金>保留线, 优先加仓动量最强科技子赛道
-  if (techTrend.offense && cash > totalAsset * AGGRO_CONFIG.cashReserve) {
-    const deploy = cash - totalAsset * AGGRO_CONFIG.cashReserve;
+  //    用 remainingCash(而非原始 cash) 计算子弹, 否则第4条已花掉的现金会被重复花一次
+  if (techTrend.offense && remainingCash > totalAsset * AGGRO_CONFIG.cashReserve) {
+    const deploy = remainingCash - totalAsset * AGGRO_CONFIG.cashReserve;
     // 找动量最强且未满仓的科技基金
     const sectorMomentum = [];
     for (const sec of TECH_SECTORS) {
@@ -365,12 +391,16 @@ function generateAggressiveOps(portfolio, indicators, techTrend) {
     if (target && target.ind.momentum > 0) {
       const weight = funds.find(f => f.code === target.code)?.value / totalAsset || 0;
       if (weight < AGGRO_CONFIG.maxSinglePosition) {
-        operations.push({
-          action: 'BUY', code: target.code, name: target.name, amount: Math.round(deploy),
-          reason: `杠铃进攻: 超${(target.ind.momentum*100).toFixed(1)}%动量的${target.name}, 用超额子弹加仓`,
-          t1: t1Info, urgency: 'MEDIUM',
-        });
-        handled.add(target.code);
+        // 金额再夹一次单票上限: 原来只判断"当前权重<35%"就全额买入, 一笔即可把单票推到远超35%
+        const amount = take(Math.min(deploy, roomToPositionLimit(target)));
+        if (amount > 0) {
+          operations.push({
+            action: 'BUY', code: target.code, name: target.name, amount,
+            reason: `杠铃进攻: 超${(target.ind.momentum*100).toFixed(1)}%动量的${target.name}, 用超额子弹加仓`,
+            t1: t1Info, urgency: 'MEDIUM',
+          });
+          handled.add(target.code);
+        }
       }
     }
   }
@@ -446,4 +476,17 @@ async function generateAggressivePortfolioAdvice(marketSentiment) {
   return result;
 }
 
-module.exports = { generateAggressivePortfolioAdvice, AGGRO_CONFIG, TECH_SECTORS };
+module.exports = {
+  generateAggressivePortfolioAdvice,
+  AGGRO_CONFIG,
+  TECH_SECTORS,
+  // 下列为纯函数决策点, 导出供 test/strategy_aggressive.test.js 直接覆盖
+  generateAggressiveOps,
+  analyzePortfolio,
+  computeIndicators,
+  detectTechTrend,
+  classifySector,
+  redemptionFeeRate,
+  holdingDays,
+  isTradingDay,
+};

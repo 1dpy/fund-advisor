@@ -51,6 +51,9 @@ jobs:
       - name: 策略核心单测 (选基/仓位/止盈止损/费率/交易日闸门)
         run: node --trace-warnings test/strategy_selection.test.js 2>&1 | tee /tmp/selection.log
 
+      - name: V6 激进引擎单测 (动量/ATR/止损止盈/轮动/金字塔/现金预算)
+        run: node --trace-warnings test/strategy_aggressive.test.js 2>&1 | tee /tmp/aggressive.log
+
       - name: 多策略回测 + 生成 HTML 报告 (联网抓取, 允许失败)
         continue-on-error: true
         run: |
@@ -99,6 +102,7 @@ jobs:
             echo "===== risk.log ====="; cat /tmp/risk.log 2>/dev/null || echo "(无 risk.log)"
             echo "===== strategy.log ====="; cat /tmp/strategy.log 2>/dev/null || echo "(无 strategy.log)"
             echo "===== selection.log ====="; cat /tmp/selection.log 2>/dev/null || echo "(无 selection.log)"
+            echo "===== aggressive.log ====="; cat /tmp/aggressive.log 2>/dev/null || echo "(无 aggressive.log)"
             echo '```'
           } > /tmp/diag.md
           gh issue create --title "CI 失败诊断 $(date -u +%Y%m%dT%H%M%SZ)" --body-file /tmp/diag.md || echo "(issue 创建失败，忽略)"
