@@ -275,6 +275,17 @@ function generateUltimateAdvice(portfolio, regime, allocation, marketSentiment, 
   const { target, drift } = allocation;
   const t1Info = { description: '场外基金 T+1 确认, 15:00前下单按当日净值, 15:00后顺延' };
 
+  // 现金预算账本: 所有 BUY/DCA 必须从这里出账。
+  //   (历史 bug: 成长补仓/防御补仓/定投/现金部署四条各自用 cash 做"够不够"判断,
+  //    互不知情 → 同时触发时建议买入总额可超过可用现金, 指令无法执行)
+  let remainingCash = Math.max(0, cash);
+  function spend(want) {
+    const amount = Math.min(Math.round(want), Math.round(remainingCash));
+    if (amount < 10) return 0; // 太小不值得下单
+    remainingCash -= amount;
+    return amount;
+  }
+
   // 1. 科技集中度检查: 如果 >50%, 只动仓位最重且非在途的成长基金, 分步转换
   if (portfolio.techConcentration > RISK_CONFIG.maxTechConcentration) {
     const targets = selectConversionTargets(funds, totalAsset, alreadyConverted);
@@ -447,19 +458,22 @@ function generateUltimateAdvice(portfolio, regime, allocation, marketSentiment, 
     const needed = totalAsset * Math.min(0.05, -drift.growth); // 每次最多补5%
     if (picks.length === 0) {
       // 空仓门/赛道池满: 不投赛道, 兜底补黄金防御
-      if (cash >= needed) {
+      const amount = remainingCash >= needed ? spend(needed * 0.6) : 0;
+      if (amount > 0) {
         operations.push({
           action: 'BUY', code: '014418', name: '博时黄金ETF联接C',
-          amount: Math.round(needed * 0.6),
+          amount,
           reason: mlPicks ? `ML整体偏空(空仓门), 转黄金防御` : `赛道池已满, 兜底增加防御`, t1: t1Info, urgency: 'LOW',
         });
       }
-    } else if (cash >= needed) {
+    } else if (remainingCash >= needed) {
       const wsum = picks.reduce((s, p) => s + (p.weight || 1), 0);
       for (const p of picks) {
+        const amount = spend(needed * (p.weight || 1) / wsum);
+        if (amount <= 0) continue;
         operations.push({
           action: 'BUY', code: p.code, name: p.name,
-          amount: Math.round(needed * (p.weight || 1) / wsum),
+          amount,
           reason: realtimeReason(p, `成长补仓(目标${(target.growth*100).toFixed(0)}%当前${(portfolio.sectorWeights.growth*100).toFixed(1)}%)`),
           t1: t1Info, urgency: 'MEDIUM',
         });
@@ -477,12 +491,13 @@ function generateUltimateAdvice(portfolio, regime, allocation, marketSentiment, 
 
   if (drift.defense < -0.05 && canBuy) {
     const needed = totalAsset * Math.min(0.05, -drift.defense);
-    if (cash >= needed) {
+    const amount = remainingCash >= needed ? spend(needed * 0.6) : 0;
+    if (amount > 0) {
       operations.push({
         action: 'BUY',
         code: '014418',
         name: '博时黄金ETF联接C',
-        amount: Math.round(needed * 0.6),
+        amount,
         reason: `防御配置不足, 增加黄金/债券暴露`,
         t1: t1Info,
         urgency: 'MEDIUM',
@@ -515,51 +530,53 @@ function generateUltimateAdvice(portfolio, regime, allocation, marketSentiment, 
   const globalFund = funds.find(f => f.code === '021277');
   if (globalFund && !globalFund.locked && canBuy) { // 赚钱优先: 不压抑定投/建仓
     const globalWeight = globalFund.value / totalAsset;
-    if (globalWeight < target.global && cash >= 200) {
-      operations.push({
-        action: 'DCA',
-        code: '021277',
-        name: '广发全球精选股票(QDII)C',
-        amount: 200,
-        reason: `全球分散配置不足, 每日定投200元(机构限购上限)`,
-        t1: t1Info,
-        urgency: 'LOW',
-      });
-    } else if (globalWeight < target.global) {
-      operations.push({
-        action: 'DCA',
-        code: '021277',
-        name: '广发全球精选股票(QDII)C',
-        amount: Math.min(200, Math.round(cash * 0.5)),
-        reason: `全球分散配置不足, 但现金有限, 小额定投`,
-        t1: t1Info,
-        urgency: 'LOW',
-      });
+    if (globalWeight < target.global) {
+      // 现金充足 → 按限购上限 200 定投; 不足 → 投剩余现金的一半 (沿用原口径, 但改用剩余现金)
+      const amount = spend(remainingCash >= 200 ? 200 : remainingCash * 0.5);
+      if (amount > 0) {
+        operations.push({
+          action: 'DCA',
+          code: '021277',
+          name: '广发全球精选股票(QDII)C',
+          amount,
+          reason: remainingCash >= 200
+            ? `全球分散配置不足, 每日定投200元(机构限购上限)`
+            : `全球分散配置不足, 但现金有限, 小额定投`,
+          t1: t1Info,
+          urgency: 'LOW',
+        });
+      }
     }
   }
 
   // 7. 现金过多: 主动部署到用户偏好赛道 (赚钱优先: 闲置现金不浪费; 不投宽基)
+  // 第7条与第4条互斥(cashExcess), 但仍要走账本: 第4b条防御补仓可能已经花掉一部分
   if (drift.cash > 0.05 && cash > totalAsset * 0.05 && canBuy) {
-    const deployAmount = cash - totalAsset * target.cash;
+    const deployAmount = Math.min(remainingCash - totalAsset * target.cash, remainingCash);
     const picks = pickPreferredSector(funds, totalAsset, mlPicks, realtimeScores);
     if (picks.length > 0) {
       const wsum = picks.reduce((s, p) => s + (p.weight || 1), 0);
       for (const p of picks) {
+        const amount = spend(Math.max(0, deployAmount) * (p.weight || 1) / wsum);
+        if (amount <= 0) continue;
         operations.push({
           action: 'BUY', code: p.code, name: p.name,
-          amount: Math.round(Math.min(deployAmount, cash) * (p.weight || 1) / wsum),
+          amount,
           reason: realtimeReason(p, `现金超配, 动态选基(当日最强${picks.length}只)`),
           t1: t1Info, urgency: 'MEDIUM',
         });
       }
     } else {
       // 空仓门/赛道池满: 兜底补黄金防御
-      operations.push({
-        action: 'BUY', code: '014418', name: '博时黄金ETF联接C',
-        amount: Math.round(Math.min(deployAmount, cash) * 0.6),
-        reason: mlPicks ? `现金超配, ML整体偏空(空仓门), 转黄金防御` : `现金超配, 赛道池已满, 兜底增加防御`,
-        t1: t1Info, urgency: 'LOW',
-      });
+      const amount = spend(Math.max(0, deployAmount) * 0.6);
+      if (amount > 0) {
+        operations.push({
+          action: 'BUY', code: '014418', name: '博时黄金ETF联接C',
+          amount,
+          reason: mlPicks ? `现金超配, ML整体偏空(空仓门), 转黄金防御` : `现金超配, 赛道池已满, 兜底增加防御`,
+          t1: t1Info, urgency: 'LOW',
+        });
+      }
     }
   }
 

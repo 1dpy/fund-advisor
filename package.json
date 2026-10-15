@@ -28,7 +28,8 @@
     "live": "node scripts/live_snapshot.js",
     "smoke": "node test/smoke.js",
     "test:selection": "node test/strategy_selection.test.js",
-    "test:aggressive": "node test/strategy_aggressive.test.js"
+    "test:aggressive": "node test/strategy_aggressive.test.js",
+    "test:fuzz": "node test/decision_fuzz.test.js"
   },
   "keywords": ["stock", "fund", "a-share", "investment", "advisor", "robo-advisor", "quant", "factor-model", "multifactor", "markowitz", "mean-variance", "risk-parity", "ewma", "walk-forward", "portfolio-optimization", "backtest", "machine-learning", "sentiment", "explainable-ai", "self-tuning", "meta-learning", "online-learning", "overfitting"],
   "author": "丁潘延 (1dpy)",

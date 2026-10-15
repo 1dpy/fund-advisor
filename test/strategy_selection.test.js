@@ -375,4 +375,32 @@ const long = Array.from({ length: 30 }, (_, i) => ({ nav: i < 20 ? 5 : 5 + (i - 
 const momLong = RQ.calcMomentum(long);
 ok('长序列末端上涨 → mom5 > 0', momLong.mom5 > 0);
 
+// ---------------------------------------------------------------
+console.log('\n【15. 现金预算: 不得推荐超出可用现金的买入】');
+// 成长与防御同时短缺时, 两条补仓分支各自判定"现金够"就会重复花同一笔钱
+const h7 = [
+  { type: 'fund', code: 'C0', name: '易方达沪深300ETF联接C', costBasis: 5000, currentValue: 5000, buyDate: daysAgo(60) },
+  { type: 'fund', code: 'C1', name: 'XX银行ETF联接C', costBasis: 4500, currentValue: 4500, buyDate: daysAgo(60) },
+  { type: 'cash', name: '现金', currentValue: 500 },
+];
+const port7 = A.analyzePortfolio(h7);
+const adv7 = A.generateUltimateAdvice(port7, { regime: 'SIDEWAYS', confidence: 50 },
+  A.checkAllocationDrift(port7, 'SIDEWAYS', PF), null, PF, undefined, undefined);
+const spend7 = adv7.operations.filter((o) => o.action === 'BUY' || o.action === 'DCA')
+  .reduce((s, o) => s + (o.amount || 0), 0);
+ok(`成长+防御同时补仓时 买入总额 ¥${spend7} ≤ 可用现金 ¥${port7.cash}`, spend7 <= port7.cash);
+ok('确实发生了买入(不是被预算卡成零)', spend7 > 0);
+// QDII 定投也不能把总额顶穿
+const h8 = [
+  { type: 'fund', code: '021277', name: '广发全球精选股票(QDII)C', costBasis: 1000, currentValue: 1000, buyDate: daysAgo(60) },
+  { type: 'fund', code: 'C1', name: '易方达沪深300ETF联接C', costBasis: 5000, currentValue: 5000, buyDate: daysAgo(60) },
+  { type: 'cash', name: '现金', currentValue: 300 },
+];
+const port8 = A.analyzePortfolio(h8);
+const adv8 = A.generateUltimateAdvice(port8, { regime: 'SIDEWAYS', confidence: 50 },
+  A.checkAllocationDrift(port8, 'SIDEWAYS', PF), null, PF, undefined, undefined);
+const spend8 = adv8.operations.filter((o) => o.action === 'BUY' || o.action === 'DCA')
+  .reduce((s, o) => s + (o.amount || 0), 0);
+ok(`含QDII定投时 买入总额 ¥${spend8} ≤ 可用现金 ¥${port8.cash}`, spend8 <= port8.cash);
+
 console.log(`\n✅ 策略核心单测全部通过 (${pass} 项)`);
