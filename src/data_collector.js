@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
+const { fetchFundHistory } = require('./fetcher');
 
 const CACHE_DIR = path.join(__dirname, '..', 'data_cache');
 const HISTORY_DAYS = 500; // 约2年交易日
@@ -22,57 +22,17 @@ if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
 }
 
-const client = axios.create({
-  timeout: 15000,
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Referer': 'https://fund.eastmoney.com/',
-  },
-});
-
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
 /**
  * 获取基金历史净值 (深度版, 支持长历史)
- * 东方财富API: 每页最多20条, 需要分页
+ * 委托 fetcher.fetchFundHistory: 同一东财 lsjz 接口、同样的分页与字段转换,
+ * 且 fetcher 侧带 3 次重试与退避 (原实现单次失败即放弃整段抓取)
  */
 async function fetchDeepHistory(code, totalDays = HISTORY_DAYS) {
-  const allRecords = [];
-  const pages = Math.ceil(totalDays / 20);
-
-  for (let page = 1; page <= pages; page++) {
-    try {
-      const url = `https://api.fund.eastmoney.com/f10/lsjz?fundCode=${code}&pageIndex=${page}&pageSize=20`;
-      const resp = await client.get(url);
-      const data = resp.data;
-
-      if (data && data.Data && data.Data.LSJZList && data.Data.LSJZList.length > 0) {
-        allRecords.push(...data.Data.LSJZList);
-      } else {
-        break;
-      }
-      if (page < pages) await sleep(200);
-    } catch (e) {
-      break;
-    }
-  }
-
-  if (allRecords.length === 0) return [];
-
-  // 转换并按日期升序排列
-  return allRecords
-    .map(item => ({
-      date: item.FSRQ,
-      nav: parseFloat(item.DWJZ),
-      close: parseFloat(item.DWJZ),
-      accNav: parseFloat(item.LJJZ),
-      changePct: parseFloat(item.JZZZL || 0),
-      volume: 0,
-    }))
-    .reverse()
-    .slice(-totalDays);
+  return fetchFundHistory(code, totalDays);
 }
 
 /**

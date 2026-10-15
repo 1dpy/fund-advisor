@@ -12,7 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
+const { fetchFundHistory } = require('./fetcher');
 const { PREFERRED_SECTORS } = require('./config');
 const { predictWithLSTM } = require('./quant/lstm_lite');
 const { predictWithLSTMAttention } = require('./quant/lstm_attention'); // ProMax: 双层LSTM+多头注意力+dropout+L2
@@ -25,19 +25,6 @@ const CACHE_DIR = path.join(ROOT, 'bt_cache');
 // ============================================================
 // 抓真实净值 (eastmoney), 带本地缓存
 // ============================================================
-function httpGetJson(url) {
-  return new Promise((resolve) => {
-    const req = https.get(url, {
-      headers: { 'Referer': 'https://fundf10.eastmoney.com/', 'User-Agent': 'Mozilla/5.0' },
-    }, (res) => {
-      let d = '';
-      res.on('data', (c) => (d += c));
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { resolve(null); } });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(12000, () => { req.destroy(); resolve(null); });
-  });
-}
 
 /**
  * 抓某基金历史净值 (升序 [{date, nav}])
@@ -57,23 +44,10 @@ async function fetchNavHistory(code, days = 120, useCache = true) {
       }
     } catch (e) { /* 缓存损坏则重抓 */ }
   }
-  // eastmoney lsjz 单页固定返回20条, 需翻页抓够 days 条
-  const pageSize = 20;
-  const pages = Math.ceil(days / pageSize);
-  let all = [];
-  for (let p = 1; p <= pages; p++) {
-    const url = `https://api.fund.eastmoney.com/f10/lsjz?fundCode=${code}&pageIndex=${p}&pageSize=${pageSize}`;
-    const j = await httpGetJson(url);
-    const list = (j && j.Data && j.Data.LSJZList) || [];
-    if (list.length === 0) break;
-    all = all.concat(list);
-    if (list.length < pageSize) break; // 最后一页
-    await new Promise((r) => setTimeout(r, 120)); // 防限流
-  }
-  const navs = all
-    .map((r) => ({ date: r.FSRQ, nav: parseFloat(r.DWJZ) }))
-    .filter((x) => x.nav > 0)
-    .sort((a, b) => (a.date < b.date ? -1 : 1));
+  // 抓数收敛到 fetcher.fetchFundHistory (同一东财 lsjz 接口, 返回已按日期升序且带重试)
+  const navs = (await fetchFundHistory(code, days))
+    .map((r) => ({ date: r.date, nav: r.nav }))
+    .filter((x) => x.nav > 0);
   if (navs.length > 0) {
     try {
       if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });

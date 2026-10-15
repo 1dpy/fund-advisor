@@ -30,8 +30,6 @@ const client = axios.create({
  */
 async function fetchFundHoldings(fundCode) {
   try {
-    const url = `https://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=1&pageSize=1`;
-    // 先获取最新净值日期, 然后获取持仓
     const holdingsUrl = `https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=${fundCode}&topline=10&year=${new Date().getFullYear()}&month=`;
     const resp = await client.get(holdingsUrl, { responseType: 'text' });
     const text = resp.data;
