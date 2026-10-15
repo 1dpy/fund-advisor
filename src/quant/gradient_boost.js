@@ -13,6 +13,8 @@
 //  回归决策树 (CART回归)
 // ============================================================
 
+const { withSeed, DEFAULT_SEED } = require('./seeded_random');
+
 function mean(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
 function variance(arr) { const m = mean(arr); return arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length; }
 
@@ -211,7 +213,8 @@ function buildGBDTDataset(rankedFunds) {
 /**
  * 训练GBDT并预测每只基金的未来收益
  */
-function trainAndPredictGB(rankedFunds) {
+// 内部实现 (特征子抽样/行抽样含随机)
+function trainAndPredictGBInner(rankedFunds) {
   if (!rankedFunds || rankedFunds.length < 15) return null;
 
   const { data, labels } = buildGBDTDataset(rankedFunds);
@@ -274,6 +277,11 @@ function trainAndPredictGB(rankedFunds) {
     nTrees: gb.trees.length,
     nSamples: data.length,
   };
+}
+
+// 种子化包装: 同一批基金 → 同一份 GBDT 预测
+function trainAndPredictGB(rankedFunds) {
+  return withSeed(DEFAULT_SEED, () => trainAndPredictGBInner(rankedFunds));
 }
 
 module.exports = { GradientBoostLite, trainAndPredictGB, buildGBDTDataset };

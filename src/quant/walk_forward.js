@@ -14,6 +14,7 @@
 
 const { predictWithKalman } = require('./kalman_filter');
 const { predictARIMA } = require('./arima_lite');
+const { withSeed, DEFAULT_SEED } = require('./seeded_random');
 
 /**
  * 单只基金回测 — V4.1 混合止盈+体制感知版
@@ -220,7 +221,8 @@ function computeStats(trades, finalValue) {
 /**
  * 网格搜索优化参数
  */
-function optimizeParams(history, paramGrid = null) {
+// 内部实现 (网格组合洗牌含随机)
+function optimizeParamsInner(history, paramGrid = null) {
   const grid = paramGrid || {
     entryThreshold: [0.003, 0.005, 0.008, 0.01],
     exitThreshold: [-0.002, -0.003, -0.005],
@@ -291,7 +293,8 @@ function shuffleArray(arr) {
  * Walk-forward 验证
  * 将历史数据分成多段, 每段用前一段优化参数, 后一段验证
  */
-function walkForwardValidation(history, numFolds = 4) {
+// 内部实现 (折内 optimizeParams 含随机洗牌)
+function walkForwardValidationInner(history, numFolds = 4) {
   if (!history || history.length < 120) return null;
 
   const foldSize = Math.floor(history.length / (numFolds + 1));
@@ -335,6 +338,14 @@ function walkForwardValidation(history, numFolds = 4) {
     avgOverfitScore: results.length > 0
       ? results.reduce((a, r) => a + r.overfitScore, 0) / results.length : 0,
   };
+}
+
+// 种子化包装: 参数优化结果会被写回 data/meta_params.json 并影响真实下单, 必须可复现
+function optimizeParams(history, paramGrid = null) {
+  return withSeed(DEFAULT_SEED, () => optimizeParamsInner(history, paramGrid));
+}
+function walkForwardValidation(history, numFolds = 4) {
+  return withSeed(DEFAULT_SEED, () => walkForwardValidationInner(history, numFolds));
 }
 
 module.exports = {

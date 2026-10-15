@@ -7,6 +7,8 @@
  * 目标: 最大化 (收益 - 2*最大回撤) — 风险调整收益
  */
 
+const { withSeed, DEFAULT_SEED } = require('./seeded_random');
+
 function mean(arr) { return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
 
 /**
@@ -103,7 +105,8 @@ function simulatePerformance(historyReturns, params) {
 /**
  * 贝叶斯优化主函数
  */
-function optimizeParameters(fundHistories, nIterations = 30) {
+// 内部实现 (初始随机采样点含随机)
+function optimizeParametersInner(fundHistories, nIterations = 30) {
   if (!fundHistories || Object.keys(fundHistories).length === 0) return null;
 
   // 收集所有基金的日收益
@@ -182,6 +185,11 @@ function optimizeParameters(fundHistories, nIterations = 30) {
     score: Math.round(bestY * 10000) / 100,
     samples: Xtrain.length,
   };
+}
+
+// 种子化包装: 贝叶斯优化的输出会覆盖止损/止盈参数, 必须可复现
+function optimizeParameters(fundHistories, nIterations = 30) {
+  return withSeed(DEFAULT_SEED, () => optimizeParametersInner(fundHistories, nIterations));
 }
 
 module.exports = { optimizeParameters, simulatePerformance };

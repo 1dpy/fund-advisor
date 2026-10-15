@@ -9,6 +9,8 @@
  *   - 状态持续时间建模
  */
 
+const { withSeed, DEFAULT_SEED } = require('./seeded_random');
+
 function mean(arr) { return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
 function std(arr) { const m=mean(arr); return arr.length>1?Math.sqrt(arr.reduce((s,v)=>s+(v-m)**2,0)/arr.length):0; }
 
@@ -100,9 +102,9 @@ function gaussianLogLik(x, mean, cov) {
 }
 
 /**
- * HMM Pro — 完整Baum-Welch训练
+ * HMM Pro — 完整Baum-Welch训练 (内部实现, k-means++ 与转移矩阵初始化含随机)
  */
-function trainHMMPro(observations, nStates=4, maxIter=50) {
+function trainHMMProInner(observations, nStates=4, maxIter=50) {
   if (!observations || observations.length < 30) return null;
 
   const T = observations.length;
@@ -329,6 +331,11 @@ function trainHMMPro(observations, nStates=4, maxIter=50) {
       currentState === stateOrder[1] ? '高仓位' :
       currentState === stateOrder[2] ? '减仓防御' : '轻仓等抄底',
   };
+}
+
+// 种子化包装: 体制判定直接影响止盈/加仓分支, 必须每次一致
+function trainHMMPro(observations, nStates = 4, maxIter = 50) {
+  return withSeed(DEFAULT_SEED, () => trainHMMProInner(observations, nStates, maxIter));
 }
 
 module.exports = { trainHMMPro, extractFeatures };

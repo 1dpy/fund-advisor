@@ -29,7 +29,10 @@
     "smoke": "node test/smoke.js",
     "test:selection": "node test/strategy_selection.test.js",
     "test:aggressive": "node test/strategy_aggressive.test.js",
-    "test:fuzz": "node test/decision_fuzz.test.js"
+    "test:fuzz": "node test/decision_fuzz.test.js",
+    "test:v4": "node test/advisor_v4.test.js",
+    "test:repro": "node test/reproducibility.test.js",
+    "test": "node test/smoke.js && node test/offline_quant.js && node test/risk_metrics.test.js && node test/strategy_modules.test.js && node test/strategy_selection.test.js && node test/strategy_aggressive.test.js && node test/advisor_v4.test.js && node test/reproducibility.test.js && node test/decision_fuzz.test.js"
   },
   "keywords": ["stock", "fund", "a-share", "investment", "advisor", "robo-advisor", "quant", "factor-model", "multifactor", "markowitz", "mean-variance", "risk-parity", "ewma", "walk-forward", "portfolio-optimization", "backtest", "machine-learning", "sentiment", "explainable-ai", "self-tuning", "meta-learning", "online-learning", "overfitting"],
   "author": "丁潘延 (1dpy)",

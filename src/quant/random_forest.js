@@ -13,6 +13,8 @@
 //  决策树 (CART简化版)
 // ============================================================
 
+const { withSeed, DEFAULT_SEED } = require('./seeded_random');
+
 function giniImpurity(labels) {
   const counts = {};
   for (const l of labels) counts[l] = (counts[l] || 0) + 1;
@@ -222,7 +224,8 @@ function scoreToLabel(score) {
  * @param {Array} rankedFunds - 已评分的基金列表
  * @returns {Object} - { predictions, model }
  */
-function trainAndPredict(rankedFunds) {
+// 内部实现 (bootstrap 抽样/特征子抽样含随机)
+function trainAndPredictInner(rankedFunds) {
   if (!rankedFunds || rankedFunds.length < 15) return null;
 
   // 构建训练数据
@@ -282,6 +285,11 @@ function trainAndPredict(rankedFunds) {
     nFeatures: data[0]?.length || 0,
     nSamples: data.length,
   };
+}
+
+// 种子化包装: 同一批基金 → 同一份 RF 预测
+function trainAndPredict(rankedFunds) {
+  return withSeed(DEFAULT_SEED, () => trainAndPredictInner(rankedFunds));
 }
 
 module.exports = { RandomForestLite, trainAndPredict, extractRFFeatures, scoreToLabel };

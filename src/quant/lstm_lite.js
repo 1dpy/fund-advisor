@@ -14,6 +14,8 @@
 //  数学工具
 // ============================================================
 
+const { withSeed, DEFAULT_SEED } = require('./seeded_random');
+
 function sigmoid(x) { return 1 / (1 + Math.exp(-Math.max(-50, Math.min(50, x)))); }
 function tanh(x) { return Math.tanh(Math.max(-50, Math.min(50, x))); }
 function dsigmoid(x) { const s = sigmoid(x); return s * (1 - s); }
@@ -304,7 +306,8 @@ function buildFeatures(closes) {
  * @param {number} predDays - 预测天数 (1-5)
  * @returns {Object} - { direction, magnitude, confidence, predictedReturns }
  */
-function predictWithLSTM(closes, predDays = 3) {
+// 内部实现 (权重随机初始化, 调用方必须经下面的种子化包装进入)
+function predictLSTMInner(closes, predDays = 3) {
   if (!closes || closes.length < 40) return null;
 
   const features = buildFeatures(closes);
@@ -397,6 +400,11 @@ function predictWithLSTM(closes, predDays = 3) {
     dailyReturns,
     model: 'LSTM-Lite',
   };
+}
+
+// 种子化包装: 同一份净值序列 → 同一份预测 (回测可复现)
+function predictWithLSTM(closes, predDays = 3) {
+  return withSeed(DEFAULT_SEED, () => predictLSTMInner(closes, predDays));
 }
 
 module.exports = { predictWithLSTM, buildFeatures, LSTMLite };

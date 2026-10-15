@@ -17,6 +17,8 @@
 // 数学工具
 // ============================================================
 
+const { withSeed, DEFAULT_SEED } = require('./seeded_random');
+
 function sigmoid(x) { return 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, x)))); }
 function tanh(x) { return Math.tanh(Math.max(-500, Math.min(500, x))); }
 function relu(x) { return Math.max(0, x); }
@@ -415,7 +417,8 @@ class LSTMAttention {
  * @param {number} forecastDays - 预测天数 (默认5天)
  * @returns {Object} { prediction, confidence, direction }
  */
-function predictWithLSTMAttention(history, lookback = 20, forecastDays = 5) {
+// 内部实现 (含随机初始化, 调用方必须经下面的种子化包装进入)
+function predictLSTMAttentionInner(history, lookback = 20, forecastDays = 5) {
   if (!history || history.length < lookback + 10) return null;
 
   // 构建特征序列: 每天用 [收益率, 动量5, 动量10, 波动率5, RSI, 均线偏离, 成交量变化, 加速度]
@@ -491,6 +494,12 @@ function predictWithLSTMAttention(history, lookback = 20, forecastDays = 5) {
     trainingLoss: model.trainingLoss[model.trainingLoss.length - 1] || 0,
     sampleCount: samples.length,
   };
+}
+
+// 种子化包装: 权重初始化/dropout/样本洗牌全部走固定种子 → 同一份数据结果可复现
+function predictWithLSTMAttention(history, lookback = 20, forecastDays = 5) {
+  return withSeed(DEFAULT_SEED,
+    () => predictLSTMAttentionInner(history, lookback, forecastDays));
 }
 
 function std(arr) {

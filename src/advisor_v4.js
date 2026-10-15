@@ -38,6 +38,16 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   const cash = BUDGET - holdings.reduce((sum, h) => sum + (h.costBasis || 0), 0);
   const t1Info = getSettlementTimeline('fund', new Date());
 
+  // 现金预算账本: 加仓/买入统一从这里出账, 保证建议买入总额不超过可用现金。
+  //   (历史 bug: 每只持仓各自用 cash 判断"够不够", 多只同时触发加仓时会重复花同一笔钱)
+  let remainingCash = Math.max(0, cash);
+  function spend(want) {
+    const amount = Math.min(Math.round(want), Math.round(remainingCash));
+    if (amount < 10) return 0; // 太小不值得下单
+    remainingCash -= amount;
+    return amount;
+  }
+
   // ============================================================
   // 1. 对每只基金运行信号融合
   // ============================================================
@@ -301,18 +311,20 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
         && profitPct < addThreshold
         && cash > (isFear ? 300 : 500)) {
       const addPrice = currentPrice || 1;
-      const addAmount = Math.min(cash * RISK_CONFIG.addPositionMaxPct, isFear ? 1500 : 2000);
-      operations.addPositions.push({
-        action: 'ADD_POSITION',
-        code: holding.code,
-        name: holding.name,
-        amount: addAmount,
-        shares: Math.floor(addAmount / addPrice),
-        reason: `跌${(Math.abs(profitPct) * 100).toFixed(1)}%+ML看多${isFear ? `·市场${sentimentLabel}逆向小加仓` : ''}`,
-        t1: t1Info,
-        urgency: 'MEDIUM',
-      });
-      continue;
+      const addAmount = spend(Math.min(remainingCash * RISK_CONFIG.addPositionMaxPct, isFear ? 1500 : 2000));
+      if (addAmount > 0) {
+        operations.addPositions.push({
+          action: 'ADD_POSITION',
+          code: holding.code,
+          name: holding.name,
+          amount: addAmount,
+          shares: Math.floor(addAmount / addPrice),
+          reason: `跌${(Math.abs(profitPct) * 100).toFixed(1)}%+ML看多${isFear ? `·市场${sentimentLabel}逆向小加仓` : ''}`,
+          t1: t1Info,
+          urgency: 'MEDIUM',
+        });
+        continue;
+      }
     }
 
     // 持有
@@ -325,16 +337,17 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   }
 
   // --- 2b. 买入: 选最强信号 ---
-  const availableCash = cash
-    - operations.sells.reduce((a, o) => a + 0, 0) // 卖出后资金T+2到账, 不能立即用
-    - operations.partialSells.reduce((a, o) => a + 0, 0)
-    - operations.addPositions.reduce((a, o) => a + o.amount, 0)
-    + operations.reduces.reduce((a, o) => a + 0, 0); // 减仓也是T+2
+  // 可用现金 = 账本余额。卖出/减仓/部分止盈的资金 T+2 才到账, 不能立即用于买入,
+  //   因此这里只扣减加仓已占用的部分 (加仓在前面已通过 spend() 出账)。
+  const availableCash = remainingCash;
 
   let buyBudget = availableCash * (1 - RISK_CONFIG.cashReserve);
   // 贪婪时收紧买入预算(留更多现金防回调); 恐慌时略放宽(逆向布局)
   if (isGreed) buyBudget *= 0.5;
   else if (isFear) buyBudget *= 1.25;
+  // 放宽不得超过实际可用现金: 恐慌时 1.25 倍会把预算顶到 availableCash 之上,
+  // 变成"建议买入 > 手里有钱", 指令根本执行不了
+  buyBudget = Math.min(buyBudget, availableCash);
   const maxPositions = RISK_CONFIG.maxTotalPositions - holdings.length + operations.sells.length;
   let buyCount = 0;
 
@@ -394,7 +407,17 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   }
 
   // --- 2c. 转换: 弱基金 → 强基金 ---
+  // 已在 2a 落地成 卖出/部分止盈/减仓/加仓 的持仓不能再被转换。
+  //   (历史 bug: 信号 WEAK 且置信>0.5 的持仓, 2a 会给 REDUCE 30%, 2c 又给 SWAP 100%,
+  //    同一只基金同时出现"减仓30%"和"全部转出"两条互相矛盾的指令)
+  const assignedCodes = new Set([
+    ...operations.sells.map(o => o.code),
+    ...operations.partialSells.map(o => o.code),
+    ...operations.reduces.map(o => o.code),
+    ...operations.addPositions.map(o => o.code),
+  ]);
   const weakHoldings = holdings.filter(h => {
+    if (assignedCodes.has(h.code)) return false;
     const fund = rankedFunds.find(f => f.code === h.code);
     return fund && fund.fusedSignal && fund.fusedSignal.signal === 'WEAK';
   });

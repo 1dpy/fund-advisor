@@ -17,6 +17,7 @@ const { PREFERRED_SECTORS } = require('./config');
 const { predictWithLSTM } = require('./quant/lstm_lite');
 const { predictWithLSTMAttention } = require('./quant/lstm_attention'); // ProMax: 双层LSTM+多头注意力+dropout+L2
 const { ensembleVote } = require('./quant/ensemble');
+const { withSeed, makeSeededRandom } = require('./quant/seeded_random');
 const mcal = require('./ml_calibrate');
 
 const ROOT = path.join(__dirname, '..');
@@ -58,17 +59,9 @@ async function fetchNavHistory(code, days = 120, useCache = true) {
 }
 
 // ============================================================
-// 种子化随机 — 让 LSTM 训练确定性 (回测可复现 / 模型对比公平)
+// 种子化随机 — 复用 src/quant/seeded_random (此前这里是唯一一份实现,
+//   其余模型直接裸调 Math.random, 导致跑两次 main.js 结论不同; 现已统一)
 // ============================================================
-function makeSeededRandom(seed) {
-  let s = seed % 2147483647; if (s <= 0) s += 2147483646;
-  return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
-}
-function withSeed(seed, fn) {
-  const orig = Math.random;
-  Math.random = makeSeededRandom(seed);
-  try { return fn(); } finally { Math.random = orig; }
-}
 
 // ============================================================
 // 单只基金 ML 打分 (LSTM-Lite / LSTM-Attention ProMax / 融合 + ensemble)
