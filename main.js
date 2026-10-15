@@ -38,7 +38,7 @@ const { predictAllNavChanges, getSettlementInfo } = require('./src/nav_predictor
 const { fetchUSImpactV2 } = require('./src/us_market_v2');
 const { runMLEnsemble } = require('./src/quant/ml_ensemble');
 const { analyzeFundHoldings } = require('./src/holdings_analyzer');
-const { getSettlementTimeline } = require('./src/t1_calendar');
+const { getSettlementTimeline, isTradingDay, nextTradingDay } = require('./src/t1_calendar');
 const { generateUltimatePortfolioAdvice } = require('./src/advisor_v5_ultimate');
 const { fetchRealtimeSectorScores, loadMetaWeights } = require('./src/realtime_quotes');
 const { generateAggressivePortfolioAdvice } = require('./src/advisor_v6_aggressive');
@@ -477,6 +477,25 @@ async function main() {
   }
 }
 
+const WEEKDAY_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+function formatTradingDay(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${WEEKDAY_CN[d.getDay()]}`;
+}
+
+// 交易日判定统一走 t1_calendar(含 2026 节假日表与周末补班表), 不再在各展示函数里手写推算
+function buildOperationHint(now = new Date()) {
+  if (!isTradingDay(now)) {
+    return `今日非交易日, 最早可操作日期: ${formatTradingDay(nextTradingDay(now))} 15:00前`;
+  }
+  if (now.getHours() >= 15) {
+    const hhmm = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
+    return `今日已收盘(${hhmm}), 最早可操作日期: ${formatTradingDay(nextTradingDay(now))} 15:00前`;
+  }
+  const minsLeft = (15 - now.getHours()) * 60 - now.getMinutes();
+  return `今日交易日进行中, 距15:00收盘还有 ${minsLeft} 分钟, 请尽快操作`;
+}
+
 function printUltimateAdvice(advice) {
   console.log('\n═══════════════════════════════════════════════════');
   console.log('  基金助手·终极版 V5 每日操作指令');
@@ -497,25 +516,7 @@ function printUltimateAdvice(advice) {
   console.log(`  可用现金: ¥${advice.cash.toFixed(2)}`);
   console.log(`  科技集中度: ${(advice.techConcentration * 100).toFixed(1)}% (上限50%)`);
   console.log(`  最大单只仓位: ${(advice.maxSingleWeight * 100).toFixed(1)}% (上限20%)`);
-  const now = new Date();
-  const dayNum = now.getDay();
-  const isTodayTrading = dayNum >= 1 && dayNum <= 5;
-  const passedDeadline = now.getHours() >= 15;
-  const wkNames = ['周日','周一','周二','周三','周四','周五','周六'];
-  const nextTradingDayStr = (d) => {
-    const nd = new Date(d);
-    do { nd.setDate(nd.getDate() + 1); } while (nd.getDay() < 1 || nd.getDay() > 5);
-    return `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}-${String(nd.getDate()).padStart(2,'0')} ${wkNames[nd.getDay()]}`;
-  };
-  let opHint;
-  if (!isTodayTrading) {
-    opHint = `今日非交易日, 最早可操作日期: ${nextTradingDayStr(now)} 15:00前`;
-  } else if (passedDeadline) {
-    opHint = `今日已收盘(${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}), 最早可操作日期: ${nextTradingDayStr(now)} 15:00前`;
-  } else {
-    const minsLeft = (15 - now.getHours()) * 60 - now.getMinutes();
-    opHint = `今日交易日进行中, 距15:00收盘还有 ${minsLeft} 分钟, 请尽快操作`;
-  }
+  const opHint = buildOperationHint(new Date());
   console.log(`\n  T+1 / 周末规则:`);
   console.log(`    - 场外基金交易日 15:00 前下单, 按当日净值 T+1 确认`);
   console.log(`    - 周六/周日/节假日不交易, 下个交易日才能操作`);
@@ -606,16 +607,7 @@ function printAggressiveAdvice(advice) {
   console.log(`  总资产: ¥${advice.totalAsset.toFixed(2)} | 可用现金: ¥${advice.cash.toFixed(2)}`);
   console.log(`  科技集中度: ${(advice.techConcentration*100).toFixed(1)}% (激进上限75%) | 最大单票: ${(advice.maxSingleWeight*100).toFixed(1)}%`);
   console.log(`  数据源: ${advice.dataSource}`);
-  const now = new Date();
-  const dayNum = now.getDay();
-  const isTodayTrading = dayNum >= 1 && dayNum <= 5;
-  const passedDeadline = now.getHours() >= 15;
-  const wkNames = ['周日','周一','周二','周三','周四','周五','周六'];
-  const nextTradingDayStr = (d) => { const nd = new Date(d); do { nd.setDate(nd.getDate()+1); } while (nd.getDay()<1||nd.getDay()>5); return `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,'0')}-${String(nd.getDate()).padStart(2,'0')} ${wkNames[nd.getDay()]}`; };
-  let opHint;
-  if (!isTodayTrading) opHint = `今日非交易日, 最早可操作日期: ${nextTradingDayStr(now)} 15:00前`;
-  else if (passedDeadline) opHint = `今日已收盘(${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}), 最早可操作日期: ${nextTradingDayStr(now)} 15:00前`;
-  else { const minsLeft=(15-now.getHours())*60-now.getMinutes(); opHint = `今日交易日进行中, 距15:00还有 ${minsLeft} 分钟, 尽快操作`; }
+  const opHint = buildOperationHint(new Date());
   console.log(`\n  T+1 / 周末规则:`);
   console.log(`    - 场外基金交易日 15:00 前下单, T+1 确认; 周末/节假日不交易`);
   console.log(`    - ${opHint}`);
