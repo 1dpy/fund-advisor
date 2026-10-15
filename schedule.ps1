@@ -37,6 +37,20 @@ Register-ScheduledTask `
     -Settings $settings `
     -Description "V6激进科技增强版每日14:30(动量轮动+趋势择时+金字塔加仓+ATR动态止损)推送钉钉"
 
+# ===== 新增: 同步抓82只真实行情快照(供云托管手机查看) =====
+# 与钉钉任务同14:30触发, 互不干扰; 写入 dashboard/api/sectors.json + meta.json
+$refreshAction = New-ScheduledTaskAction `
+    -Execute $nodeExe `
+    -Argument "scripts\refresh_sectors_live.js" `
+    -WorkingDirectory $projectDir
+
+Register-ScheduledTask `
+    -TaskName "FundSnapshotRefresh" `
+    -Action $refreshAction `
+    -Trigger $trigger `
+    -Settings $settings `
+    -Description "每日14:30(交易日)抓82只真实实时行情生成dashboard/api/sectors.json快照, 供云托管部署, 手机可看"
+
 Write-Host ""
 Write-Host "============================================"
 Write-Host "  V6 激进科技增强版定时任务已创建!"

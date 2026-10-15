@@ -244,21 +244,26 @@
   function fmt(n) { if (n == null || isNaN(n)) return '0'; var a = Math.abs(n); if (a >= 1e8) return (n / 1e8).toFixed(2) + '亿'; if (a >= 1e4) return (n / 1e4).toFixed(2) + '万'; return Number(n.toFixed(2)).toLocaleString('zh-CN'); }
   function kpi(label, val, sign) { return '<div class="kpi"><div class="label">' + label + '</div><div class="val ' + (sign || '') + '">' + val + '</div></div>'; }
 
-  // ---------- 加载调度 ----------
+  // ---------- 加载调度 (静态优先, 动态回落) ----------
+  function loadJSON(name) {
+    var q = '?mode=' + state.mode;
+    // 静态部署: /api/xxx.json; 本地动态: /api/xxx (前者失败自动回落)
+    return fetchJSON('/api/' + name + '.json' + q)
+      .catch(function () { return fetchJSON('/api/' + name + q); });
+  }
   function loadTab() {
     var tab = state.tab;
     showLoading('加载中...');
-    var q = '?mode=' + state.mode;
     if (tab === 'overview') {
-      fetchJSON('/api/portfolio').then(renderOverview).catch(function (e) { showStatus('持仓加载失败: ' + e.message, true); });
+      loadJSON('portfolio').then(renderOverview).catch(function (e) { showStatus('持仓加载失败: ' + e.message, true); });
     } else if (tab === 'factors') {
-      fetchJSON('/api/factors' + q).then(renderFactors).catch(function (e) { showStatus('因子加载失败: ' + e.message, true); });
+      loadJSON('factors').then(renderFactors).catch(function (e) { showStatus('因子加载失败: ' + e.message, true); });
     } else if (tab === 'backtest') {
-      fetchJSON('/api/backtest' + q).then(renderBacktest).catch(function (e) { showStatus('回测加载失败: ' + e.message, true); });
+      loadJSON('backtest').then(renderBacktest).catch(function (e) { showStatus('回测加载失败: ' + e.message, true); });
     } else if (tab === 'selfiterate') {
-      fetchJSON('/api/selfiterate' + q).then(renderSelfIterate).catch(function (e) { showStatus('自我迭代加载失败: ' + e.message, true); });
+      loadJSON('selfiterate').then(renderSelfIterate).catch(function (e) { showStatus('自我迭代加载失败: ' + e.message, true); });
     } else if (tab === 'sectors') {
-      fetchJSON('/api/sectors' + q).then(renderSectors).catch(function (e) { showStatus('实时赛道加载失败: ' + e.message, true); });
+      loadJSON('sectors').then(renderSectors).catch(function (e) { showStatus('实时赛道加载失败: ' + e.message, true); });
     }
   }
 
@@ -371,6 +376,14 @@
       }
     });
   })();
+
+  // ---------- 静态部署: 快照元信息 + 隐藏上传(无后端) ----------
+  fetchJSON('/api/meta.json').then(function (m) {
+    var note = document.getElementById('snapNote');
+    if (note) { note.style.display = 'block'; note.textContent = '📌 静态快照 · 生成于 ' + (m.generatedAt || '') + ' · ' + (m.note || ''); }
+    var up = document.querySelector('.uploader');
+    if (up) up.style.display = 'none';
+  }).catch(function () { /* 动态模式, 不处理 */ });
 
   // 初始
   loadTab();

@@ -112,3 +112,16 @@ tr:hover td { background: #f8fafc; }
 .uploader .btn-confirm { border: 0; background: var(--up); color: #fff; padding: 9px 16px; border-radius: 9px; cursor: pointer; font-size: 13px; }
 .uploader .btn-cancel { border: 1px solid var(--line); background: var(--card); padding: 9px 16px; border-radius: 9px; cursor: pointer; font-size: 13px; }
 .uploader .up-note { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+
+.snap-note { font-size: 12px; color: var(--muted); background: #fff7ed; border: 1px solid #fed7aa; border-radius: 9px; padding: 8px 12px; margin-bottom: 12px; line-height: 1.6; }
+
+/* ---------- 访问口令遮罩 (静态部署) ---------- */
+#gate { position: fixed; inset: 0; background: #0f172a; display: flex; align-items: center; justify-content: center; z-index: 9999; }
+.gate-box { text-align: center; color: #e2e8f0; font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; padding: 24px; max-width: 320px; }
+.gate-logo { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+.gate-sub { color: #94a3b8; font-size: 13px; margin: 0 0 20px; }
+#gatePwd { width: 100%; padding: 11px 12px; border-radius: 9px; border: 1px solid #334155; background: #1e293b; color: #e2e8f0; font-size: 15px; display: block; margin-bottom: 12px; box-sizing: border-box; }
+#gateBtn { width: 100%; padding: 11px; border: none; border-radius: 9px; background: var(--brand); color: #fff; font-size: 15px; cursor: pointer; }
+#gateBtn:hover { filter: brightness(1.08); }
+#gateErr { color: #f87171; font-size: 13px; margin-top: 10px; }
+.gate-foot { color: #64748b; font-size: 11px; margin: 18px 0 0; line-height: 1.6; }
