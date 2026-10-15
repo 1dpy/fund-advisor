@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { BUDGET, WATCHLIST, FEE_CONFIG, RISK_CONFIG, STRATEGY, STRATEGY_CONFIG, PREFERRED_SECTORS, MAX_DEPLOY_SECTORS, REALTIME_PICK_COUNT } = require('./config');
 const RM = require('./risk_metrics');
+const { isTradingDay } = require('./t1_calendar');
 
 const ROOT = path.join(__dirname, '..');
 const HOLDINGS_PATH = path.join(ROOT, 'holdings.json');
@@ -46,19 +47,26 @@ function todayStr() {
   return new Date().toISOString().split('T')[0];
 }
 
-function isTradingDay(date = new Date()) {
-  const day = date.getDay();
-  return day >= 1 && day <= 5; // 周一到周五
-}
+// 交易日判断统一走 t1_calendar (含节假日与调休补班), 不在这里自己判断星期几
+//   (历史 bug: 本地只看 day>=1&&day<=5, 国庆/春节等工作日休市日会照常出交易指令)
 
 function holdingDays(buyDate) {
   if (!buyDate) return 999;
   return Math.floor((Date.now() - new Date(buyDate).getTime()) / 86400000);
 }
 
-function classifySector(fundName) {
+// 全球/QDII 判定 —— 全模块唯一口径
+//   (历史 bug: classifySector 只认"全球/qdii", 而这里还认"纳斯达克/标普",
+//    导致纳指100被算进"A股成长集中度", 与本模块"QDII是分散配置不算集中风险"的意图矛盾)
+function isGlobalDiversification(fundName) {
   const n = (fundName || '').toLowerCase();
-  if (n.includes('全球') || n.includes('qdii')) return 'global';
+  return n.includes('全球') || n.includes('qdii') || n.includes('纳斯达克') || n.includes('标普');
+}
+
+// 板块分类复用上面的全球口径, 保证"是不是全球基"只有一个答案
+function classifySector(fundName) {
+  if (isGlobalDiversification(fundName)) return 'global';
+  const n = (fundName || '').toLowerCase();
   if (n.includes('信息') || n.includes('科技') || n.includes('半导体') || n.includes('芯片') || n.includes('电池') || n.includes('创业板') || n.includes('科创') || n.includes('恒生科技') || n.includes('中概') || n.includes('互联网')) return 'growth';
   if (n.includes('沪深300') || n.includes('红利') || n.includes('银行') || n.includes('建筑') || n.includes('传媒') || n.includes('医疗')) return 'value';
   if (n.includes('黄金') || n.includes('债券') || n.includes('短债') || n.includes('货币') || n.includes('余额宝')) return 'defense';
@@ -69,11 +77,6 @@ function isPendingConversion(holding) {
   const notes = (holding.notes || '').toLowerCase();
   // 仅当该基已基本全部转出或已申请完全转换时才阻止
   return notes.includes('已申请转换') && (notes.includes('清0') || notes.includes('清零') || notes.includes('全部'));
-}
-
-function isGlobalDiversification(fundName) {
-  const n = (fundName || '').toLowerCase();
-  return n.includes('全球') || n.includes('qdii') || n.includes('纳斯达克') || n.includes('标普');
 }
 
 // 根据当前组合给出最优先需要转换的基金, 避免一次动太多
@@ -628,4 +631,14 @@ module.exports = {
   analyzePortfolio,
   detectMarketRegime,
   checkAllocationDrift,
+  // 下列为纯函数决策点, 导出供 test/strategy_selection.test.js 直接覆盖
+  //   (选基/仓位/费率/分类是策略语义的核心, 不测则改坏了没人知道)
+  generateUltimateAdvice,
+  pickPreferredSector,
+  selectConversionTargets,
+  classifySector,
+  isGlobalDiversification,
+  redemptionFeeRate,
+  holdingDays,
+  isTradingDay,
 };

@@ -19,6 +19,8 @@ const fs = require('fs');
 const path = require('path');
 const { BUDGET, FEE_CONFIG } = require('./config');
 const { fetchFundHistory } = require('./fetcher');
+// 交易日判断统一走 t1_calendar (含节假日与调休补班), 不在这里自己判断星期几
+const { isTradingDay } = require('./t1_calendar');
 
 const ROOT = path.join(__dirname, '..');
 const HOLDINGS_PATH = path.join(ROOT, 'holdings.json');
@@ -84,7 +86,7 @@ function loadHoldings() {
   catch { return []; }
 }
 function todayStr() { return new Date().toISOString().split('T')[0]; }
-function isTradingDay(d = new Date()) { const day = d.getDay(); return day >= 1 && day <= 5; }
+// (isTradingDay 由 t1_calendar 提供, 见文件头 require)
 function holdingDays(buyDate) { if (!buyDate) return 999; return Math.floor((Date.now() - new Date(buyDate).getTime()) / 86400000); }
 function classifySector(name) {
   const n = (name || '').toLowerCase();
