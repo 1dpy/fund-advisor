@@ -19,9 +19,13 @@ const ROOT = path.join(__dirname, '..');
 function getHoldingsPath() {
   return process.env.HOLDINGS_FILE ? path.resolve(process.env.HOLDINGS_FILE) : path.join(ROOT, 'holdings.json');
 }
-// 备份与回撤记录固定写入 data/ (已被 .gitignore 忽略, 不污染项目根)
-const ARTIFACT_DIR = path.join(ROOT, 'data');
-const LAST_APPLIED_PATH = path.join(ARTIFACT_DIR, 'last_applied.json');
+// 产物目录(备份/回撤记录)支持 APPLY_ARTIFACT_DIR 环境变量隔离。
+// ★ 测试必须设它: backupHoldings 只保留最近 5 份, 测试跑一轮会把用户真实的
+//   holdings.applybak.* 全顶掉, 而且备份内容还是测试数据。
+function getArtifactDir() {
+  return process.env.APPLY_ARTIFACT_DIR ? path.resolve(process.env.APPLY_ARTIFACT_DIR) : path.join(ROOT, 'data');
+}
+const LAST_APPLIED_PATH = path.join(getArtifactDir(), 'last_applied.json');
 
 function loadHoldings() {
   try { return JSON.parse(fs.readFileSync(getHoldingsPath(), 'utf8')); }
@@ -33,13 +37,14 @@ function backupHoldings() {
   try {
     const hp = getHoldingsPath();
     if (!fs.existsSync(hp)) return;
-    if (!fs.existsSync(ARTIFACT_DIR)) fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
-    const f = path.join(ARTIFACT_DIR, 'holdings.applybak.' + Date.now() + '.json');
+    const dir = getArtifactDir();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, 'holdings.applybak.' + Date.now() + '.json');
     fs.copyFileSync(hp, f);
-    const list = fs.readdirSync(ARTIFACT_DIR)
+    const list = fs.readdirSync(dir)
       .filter(x => x.startsWith('holdings.applybak.'))
       .sort();
-    while (list.length > 5) fs.unlinkSync(path.join(ARTIFACT_DIR, list.shift()));
+    while (list.length > 5) fs.unlinkSync(path.join(dir, list.shift()));
   } catch (e) { /* 备份失败不阻断主流程 */ }
 }
 
@@ -55,7 +60,7 @@ function findOrCreate(holdings, code, name) {
       name: name || code,
       type: 'fund',
       buyPrice: 0,
-      shares: 1,
+      shares: 0,   // 必须是 0: credit() 会按净值折算追加, 初始给 1 会多算一份
       costBasis: 0,
       buyDate: new Date().toISOString().split('T')[0],
       currentValue: 0,
@@ -76,6 +81,92 @@ function parseTarget(targetStr) {
 }
 
 function round2(n) { return Math.round(n * 100) / 100; }
+function round4(n) { return Math.round(n * 10000) / 10000; }
+function num(x) { const v = Number(x); return Number.isFinite(v) ? v : 0; }
+
+// ============================================================
+// 账本口径同步: currentValue 与 shares/costBasis 必须一起动
+//
+// 背景(真缺陷): 本文件(V5/V6 路径)只维护 currentValue; 而 V4 默认引擎走的
+// advisor_v3.applyDecisions 只维护 shares/costBasis。两者写同一个 holdings.json
+// 却各写一半字段 —— 跑过一次 --ultimate --apply 后, V4 读到的成本与份额全是旧的,
+// 止损/止盈会按错误的盈亏率触发。
+//
+// costBasis 与净值无关, 永远能同步; shares 需要单位净值, 拿不到时明确告警而不是静默。
+// ============================================================
+
+/** 推算单位净值: 优先 currentValue/shares, 其次 buyPrice, 最后查本地净值缓存 */
+function unitValue(h) {
+  const cv = num(h.currentValue), sh = num(h.shares);
+  if (cv > 0 && sh > 0) return cv / sh;
+  const bp = num(h.buyPrice);
+  return bp > 0 ? bp : 0;
+}
+
+/**
+ * 从本地净值缓存取最新净值(同步, 离线)。
+ * V5/V6 的操作指令只带 amount 不带净值, 而份额 = 金额/净值。
+ * 本流程本就会给候选基金抓历史净值, 所以缓存基本都有。
+ */
+function lookupNav(code) {
+  try {
+    const f = path.join(ROOT, 'data_cache', `${code}.json`);
+    if (!fs.existsSync(f)) return 0;
+    const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+    const arr = Array.isArray(j) ? j : (j.history || []);
+    // 取日期最大的一条, 不假设数组是升序还是降序
+    let best = 0, bestDate = '';
+    for (const rec of arr) {
+      if (!rec) continue;
+      const v = Number(rec.nav != null ? rec.nav : rec.close);
+      if (!Number.isFinite(v) || v <= 0) continue;
+      const d = String(rec.date || '');
+      if (!bestDate || d >= bestDate) { bestDate = d; best = v; }
+    }
+    return best;
+  } catch (e) { /* 缓存缺失/损坏: 返回 0, 由调用方告警 */ }
+  return 0;
+}
+
+/** 买入/转入: 市值 +amt, 成本 +amt, 份额按单位净值折算 */
+function credit(h, amt, price, log) {
+  if (amt <= 0) return;
+  // ★ 单位净值必须在改市值**之前**算: unitValue 用 currentValue/shares,
+  //   先加了 amt 会拿"新市值/旧份额"去折份额, 份额直接算少
+  const up = num(price) || unitValue(h) || lookupNav(h.code);
+  h.currentValue = round2(num(h.currentValue) + amt);
+  h.costBasis = round2(num(h.costBasis) + amt);
+  if (up > 0) {
+    h.shares = round4(num(h.shares) + amt / up);
+    if (!num(h.buyPrice)) h.buyPrice = round4(up);
+  } else {
+    // 拿不到净值时不能瞎填份额: V4 的 profitPct = shares*现价/costBasis - 1,
+    // 份额填错会直接把盈亏率算飞, 进而误触发止损/止盈。宁可标记出来让人补。
+    h.needsNavSync = true;
+    log.push(`⚠️ ${h.code} ${h.name || ''} 无可用净值(指令未带 price 且本地缓存无此基金): `
+      + `市值与成本已更新, 份额未同步 —— 请手动补 shares 后再跑 V4 决策`);
+  }
+  if (!h.buyDate) h.buyDate = new Date().toISOString().split('T')[0];
+  if (num(h.currentValue) > 0 && num(h.costBasis) > 0) {
+    h.holdingReturn = round2((h.currentValue - h.costBasis) / h.costBasis * 100);
+  }
+}
+
+/** 卖出/转出: 按卖出占比同比例结转成本与份额(不能只减市值) */
+function debit(h, amt, log) {
+  const cv = num(h.currentValue);
+  const amt2 = Math.min(amt, cv);
+  if (amt2 <= 0) return 0;
+  const ratio = cv > 0 ? amt2 / cv : 0;
+  h.currentValue = round2(Math.max(0, cv - amt2));
+  h.costBasis = round2(Math.max(0, num(h.costBasis) * (1 - ratio)));
+  h.shares = round4(Math.max(0, num(h.shares) * (1 - ratio)));
+  if (num(h.costBasis) > 0) {
+    h.holdingReturn = round2((h.currentValue - h.costBasis) / h.costBasis * 100);
+  }
+  if (h.currentValue === 0) h.notes = (h.notes || '') + '; 已清仓(建议执行)';
+  return amt2;
+}
 
 /**
  * 应用建议到持仓
@@ -100,12 +191,8 @@ function applyAdvice(advice, opts = {}) {
     if (op.action === 'SELL' || op.action === 'CONVERT') {
       const src = byCode[op.code];
       if (!src) { log.push(`跳过: 源基金 ${op.code} 未找到`); continue; }
-      const amt = Math.min(op.amount || 0, src.currentValue);
+      const amt = debit(src, op.amount || 0, log);
       if (amt <= 0) { log.push(`跳过: ${op.name || op.code} 可卖金额≤0`); continue; }
-      src.currentValue = round2(Math.max(0, src.currentValue - amt));
-      if (src.currentValue === 0) {
-        src.notes = (src.notes || '') + '; 已清仓(建议执行)';
-      }
       if (op.action === 'SELL') {
         if (cash) cash.currentValue = round2(cash.currentValue + amt);
         log.push(`SELL ${op.name || op.code}(${op.code}) ¥${amt.toFixed(0)} → 现金`);
@@ -114,15 +201,17 @@ function applyAdvice(advice, opts = {}) {
         const t = parseTarget(op.target);
         if (!t) { log.push(`CONVERT 跳过: 目标解析失败 (${op.target})`); continue; }
         const tgt = findOrCreate(holdings, t.code, t.name);
-        tgt.currentValue = round2(tgt.currentValue + amt);
+        byCode[t.code] = tgt;
+        credit(tgt, amt, op.price || op.nav, log);
         log.push(`CONVERT ${op.name || op.code}(${op.code}) ¥${amt.toFixed(0)} → ${tgt.name}(${tgt.code})`);
         appliedOps.push({ action: 'CONVERT', code: t.code, name: tgt.name, amount: amt, srcCode: op.code });
       }
     } else if (op.action === 'BUY' || op.action === 'DCA') {
       const tgt = findOrCreate(holdings, op.code, op.name);
+      byCode[op.code] = tgt;
       const amt = cash ? Math.min(op.amount || 0, cash.currentValue) : (op.amount || 0);
       if (amt <= 0) { log.push(`跳过: ${op.name || op.code} 买入金额≤0`); continue; }
-      tgt.currentValue = round2(tgt.currentValue + amt);
+      credit(tgt, amt, op.price || op.nav, log);
       if (cash) cash.currentValue = round2(cash.currentValue - amt);
       log.push(`${op.action} ${op.name || op.code}(${op.code}) ¥${amt.toFixed(0)} ← 现金`);
       appliedOps.push({ action: op.action, code: op.code, name: op.name || op.code, amount: amt });
@@ -167,20 +256,20 @@ function revertLast() {
   for (const op of lp.ops) {
     if (op.action === 'BUY' || op.action === 'DCA') {
       const f = byCode[op.code];
-      if (f) f.currentValue = round2(Math.max(0, f.currentValue - (op.amount || 0)));
+      if (f) debit(f, op.amount || 0, log);
       if (cash) cash.currentValue = round2(cash.currentValue + (op.amount || 0));
-      if (f && f.currentValue <= 0 && !f.locked) toRemove.push(op.code);
+      if (f && num(f.currentValue) <= 0 && !f.locked) toRemove.push(op.code);
       log.push(`↩ 回撤 BUY ${op.name || op.code}(${op.code}) ¥${(op.amount || 0)}`);
     } else if (op.action === 'SELL') {
       const f = byCode[op.code];
-      if (f) f.currentValue = round2(f.currentValue + (op.amount || 0));
+      if (f) credit(f, op.amount || 0, op.price || op.nav, log);
       if (cash) cash.currentValue = round2(cash.currentValue - (op.amount || 0));
       log.push(`↩ 回撤 SELL ${op.name || op.code}(${op.code}) ¥${(op.amount || 0)}`);
     } else if (op.action === 'CONVERT') {
       const t = byCode[op.code];
       const s = byCode[op.srcCode];
-      if (t) t.currentValue = round2(Math.max(0, t.currentValue - (op.amount || 0)));
-      if (s) s.currentValue = round2(s.currentValue + (op.amount || 0));
+      if (t) debit(t, op.amount || 0, log);
+      if (s) credit(s, op.amount || 0, op.price || op.nav, log);
       log.push(`↩ 回撤 CONVERT → ${op.name || op.code}(${op.code})`);
     }
   }

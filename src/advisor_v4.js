@@ -174,7 +174,10 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     const fundData = rankedFunds.find(f => f.code === holding.code);
     const signal = fundData?.fusedSignal;
     const currentPrice = fundData?.price || fundData?.nav || holding.buyPrice || 0;
-    const profitPct = holding.costBasis > 0 && currentPrice > 0
+    // shares ≤ 0 说明份额缺失(如 V5/V6 路径建仓时拿不到净值)。此时
+    //   shares*现价 = 0 → 盈亏率算成 -100%, 会直接误触发硬止损。
+    //   算不出来就不按盈亏决策, 交由下面的信号/体制分支处理。
+    const profitPct = holding.costBasis > 0 && currentPrice > 0 && holding.shares > 0
       ? (holding.shares * currentPrice - holding.costBasis) / holding.costBasis
       : 0;
     const holdingDays = holding.buyDate
