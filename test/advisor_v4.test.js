@@ -23,6 +23,8 @@ const CACHE_DIR = path.join(__dirname, '..', 'data_cache');
 function today() { return new Date().toISOString().slice(0, 10); }
 
 // 预置缓存: lastDate = 今天 → getCachedHistory 直接返回, 不触发网络
+// ★ 会在真实的 data_cache/ 里写文件, 登记下来跑完删掉, 别污染用户的净值缓存
+const SEEDED = new Set();
 function seedCache(code, navs) {
   if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
   const n = navs.length;
@@ -33,6 +35,12 @@ function seedCache(code, navs) {
   });
   fs.writeFileSync(path.join(CACHE_DIR, `${code}.json`),
     JSON.stringify({ code, history, lastUpdate: new Date().toISOString() }));
+  SEEDED.add(code);
+}
+function cleanupCache() {
+  for (const code of SEEDED) {
+    try { fs.unlinkSync(path.join(CACHE_DIR, `${code}.json`)); } catch (e) { /* 已删 */ }
+  }
 }
 
 const UP = Array.from({ length: 40 }, (_, i) => 1 + i * 0.01);       // → STRONG_BUY
@@ -230,5 +238,6 @@ const spendOf = (r) => moneyOps(r).reduce((s, o) => s + (o.amount || 0), 0);
     ok(`持仓 ${code} 有明确操作`, allOps(rCov).some(o => o.code === code));
   }
 
+  cleanupCache();
   console.log(`\n✅ V4 决策引擎单测全部通过 (${pass} 项)`);
-})().catch(e => { console.error('\n❌ 测试异常:', e); process.exit(1); });
+})().catch(e => { cleanupCache(); console.error('\n❌ 测试异常:', e); process.exit(1); });
