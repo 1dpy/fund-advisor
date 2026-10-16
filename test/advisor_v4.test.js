@@ -23,16 +23,27 @@ const CACHE_DIR = path.join(__dirname, '..', 'data_cache');
 function today() { return new Date().toISOString().slice(0, 10); }
 
 // 预置缓存: lastDate = 今天 → getCachedHistory 直接返回, 不触发网络
-// ★ 会在真实的 data_cache/ 里写文件, 登记下来跑完删掉, 别污染用户的净值缓存
+/**
+ * 生成以"今天"结尾的升序日期序列。
+ * ★ 必须和真实净值一样是近期日期: 数据新鲜度闸门(见 src/data_freshness.js)
+ *   会把"净值停止更新 > 10 个交易日"的基金排除出买入/加仓/转换。
+ *   此前 fixture 全部写死 2026-01-01, 会被正确判为 dead 而触发不到加仓分支。
+ * @param {number} n 条数
+ * @param {Date=} end 序列最后一天, 默认今天
+ */
+function dateSeries(n, end = new Date()) {
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+    d.setDate(d.getDate() - (n - 1 - i));
+    const p = (x) => String(x).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  });
+}
+
 const SEEDED = new Set();
 function seedCache(code, navs) {
   if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
-  const n = navs.length;
-  const history = navs.map((nav, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (n - 1 - i));
-    return { date: d.toISOString().slice(0, 10), nav };
-  });
+  const history = navs.map((nav, i) => ({ date: dateSeries(navs.length)[i], nav }));
   fs.writeFileSync(path.join(CACHE_DIR, `${code}.json`),
     JSON.stringify({ code, history, lastUpdate: new Date().toISOString() }));
   SEEDED.add(code);
@@ -61,7 +72,7 @@ function mkFund(code, navs, price, score = 50) {
   seedCache(code, navs);
   return {
     code, name: code + '测试基金C',
-    history: navs.map((nav, i) => ({ date: '2026-01-01', nav })),
+    history: navs.map((nav, i) => ({ date: dateSeries(navs.length)[i], nav })),
     nav: price, price, score,
   };
 }

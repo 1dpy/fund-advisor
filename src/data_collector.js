@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { fetchFundHistory } = require('./fetcher');
+const { assessFreshness } = require('./data_freshness');
 
 const CACHE_DIR = path.join(__dirname, '..', 'data_cache');
 const HISTORY_DAYS = 500; // 约2年交易日
@@ -45,38 +46,51 @@ async function getCachedHistory(code, forceUpdate = false) {
   if (!forceUpdate && fs.existsSync(cacheFile)) {
     try {
       const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      const history = Array.isArray(cached.history) ? cached.history : [];
       // 检查是否需要更新 (最后一条是否是今天或最近交易日)
-      const lastDate = cached.history[cached.history.length - 1]?.date;
+      const lastDate = history.length > 0 ? history[history.length - 1]?.date : null;
       const today = new Date().toISOString().slice(0, 10);
       if (lastDate && lastDate >= today) {
+        cached.freshness = assessFreshness(history);
         return cached;
       }
       // 增量更新: 只拉最近的几页
-      const newRecords = await fetchDeepHistory(code, 40);
+      // ⚠️ 抓取要单独兜异常: 原实现里 fetchDeepHistory 抛错会跳出整个 try
+      //   落到下方"全量获取", 若全量也失败, 空 history 会写回缓存文件覆盖好数据
+      let newRecords = [];
+      try {
+        newRecords = await fetchDeepHistory(code, 40);
+      } catch (e) { /* 网络异常: 回退缓存 */ }
       if (newRecords.length > 0) {
-        const existingDates = new Set(cached.history.map(h => h.date));
+        const existingDates = new Set(history.map(h => h.date));
         const fresh = newRecords.filter(r => !existingDates.has(r.date));
         if (fresh.length > 0) {
-          cached.history = [...cached.history, ...fresh].slice(-HISTORY_DAYS);
+          cached.history = [...history, ...fresh].slice(-HISTORY_DAYS);
           cached.lastUpdate = new Date().toISOString();
-          fs.writeFileSync(cacheFile, JSON.stringify(cached));
+          try { fs.writeFileSync(cacheFile, JSON.stringify(cached)); } catch (e) { /* 写缓存失败不影响主流程 */ }
         }
+      }
+      if (cached.history && cached.history.length > 0) {
+        cached.freshness = assessFreshness(cached.history);
         return cached;
       }
-      return cached;
     } catch (e) {
       // 缓存损坏, 重新获取
     }
   }
 
-  // 全量获取
+  // 全量获取 (仅在无缓存 / 缓存损坏时到达)
   const history = await fetchDeepHistory(code, HISTORY_DAYS);
   const data = {
     code,
     history,
     lastUpdate: new Date().toISOString(),
+    freshness: assessFreshness(history),
   };
-  fs.writeFileSync(cacheFile, JSON.stringify(data));
+  // 抓空了不要写缓存: 否则一次网络故障就把"无数据"固化下来, 后续都读空
+  if (history.length > 0) {
+    try { fs.writeFileSync(cacheFile, JSON.stringify(data)); } catch (e) { /* 写缓存失败不影响主流程 */ }
+  }
   return data;
 }
 

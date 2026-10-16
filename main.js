@@ -39,7 +39,7 @@ const { fetchUSImpactV2 } = require('./src/us_market_v2');
 const { runMLEnsemble } = require('./src/quant/ml_ensemble');
 const { analyzeFundHoldings } = require('./src/holdings_analyzer');
 const { getSettlementTimeline } = require('./src/t1_calendar');
-const { printUltimateAdvice, formatDingtalkUltimate, printAggressiveAdvice, formatDingtalkAggressive } = require('./src/advice_presenter');
+const { printUltimateAdvice, formatDingtalkUltimate, printAggressiveAdvice, formatDingtalkAggressive, printFreshnessWarnings } = require('./src/advice_presenter');
 const { generateUltimatePortfolioAdvice } = require('./src/advisor_v5_ultimate');
 const { fetchRealtimeSectorScores, loadMetaWeights } = require('./src/realtime_quotes');
 const { generateAggressivePortfolioAdvice } = require('./src/advisor_v6_aggressive');
@@ -443,6 +443,7 @@ async function main() {
     if (showJson) {
       console.log(JSON.stringify(decisions, null, 2));
     } else if (!quiet) {
+      printFreshnessWarnings(decisions.freshnessWarnings);
       printOperations(decisions);
     }
 

@@ -178,8 +178,38 @@ function formatDingtalkAggressive(advice) {
   return lines.join('\n');
 }
 
+/**
+ * 打印净值新鲜度告警。
+ * 这些基金已被排除出买入/加仓/转换决策, 必须让用户看见 ——
+ * 否则只剩"今天没有买入建议", 用户会以为是行情不好而不是数据断了。
+ * @param {Array} warnings advisor_v4 返回的 freshnessWarnings
+ */
+function printFreshnessWarnings(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return;
+  const dead = warnings.filter(w => w.level === 'dead');
+  const stale = warnings.filter(w => w.level === 'stale');
+
+  console.log('\n⚠️  数据新鲜度告警');
+  if (dead.length > 0) {
+    console.log(`   ${dead.length} 只基金净值已停止更新, 已排除出买入/加仓/转换:`);
+    dead.slice(0, 10).forEach(w => {
+      console.log(`   · ${w.code} ${w.name || ''} — ${w.warning}`);
+    });
+    if (dead.length > 10) console.log(`   ... 另有 ${dead.length - 10} 只`);
+  }
+  if (stale.length > 0) {
+    console.log(`   ${stale.length} 只基金净值滞后(仍参与决策, 但指标可能失真):`);
+    stale.slice(0, 5).forEach(w => {
+      console.log(`   · ${w.code} ${w.name || ''} — ${w.warning}`);
+    });
+    if (stale.length > 5) console.log(`   ... 另有 ${stale.length - 5} 只`);
+  }
+  console.log('   如大面积出现, 通常是长时间未运行或数据源异常, 建议先跑一次数据更新。\n');
+}
+
 module.exports = {
   buildOperationHint,
+  printFreshnessWarnings,
   printUltimateAdvice,
   formatDingtalkUltimate,
   printAggressiveAdvice,

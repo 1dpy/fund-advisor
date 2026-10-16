@@ -23,6 +23,19 @@ const { predictARIMA } = require('./quant/arima_lite');
 const { extractFeatures } = require('./feature_engine');
 const { resample, hurstExponent, getCachedHistory } = require('./data_collector');
 const { getSettlementTimeline } = require('./t1_calendar');
+const { assessFreshness } = require('./data_freshness');
+
+/**
+ * 硬性可执行性闸门: 净值已停止更新(停牌/清盘/数据源中断嫌疑)的基金,
+ * 现价未知且未必能成交, 不参与买入 / 加仓 / 转换。
+ * 抽成纯函数是为了让测试直接打真实代码, 而不是在测试里复制一遍过滤条件。
+ * @param {Object} fund rankedFunds 中的条目(带 freshness 字段)
+ * @returns {boolean}
+ */
+function isFreshEnoughToTrade(fund) {
+  if (!fund || !fund.freshness) return true;  // 无新鲜度信息时保持原行为
+  return fund.freshness.usable !== false;
+}
 
 /**
  * V4 主决策函数
@@ -55,6 +68,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   // 1. 对每只基金运行信号融合
   // ============================================================
   const rankedFunds = [];
+  const freshnessWarnings = [];
   const marketContext = {
     regime: marketRegime?.regime || 'SIDEWAYS',
     marketReturns: indexes?.length > 0
@@ -106,10 +120,17 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     const fused = fuseSignals(fund, mlResults, marketContext);
     if (!fused) continue;
 
+    // ★ 数据新鲜度: 净值停止更新(停牌/清盘/数据源中断)的基金,
+    //   用它算出的动量与预测本身就是错的。仍进 rankedFunds(持仓要看),
+    //   但会在买入/转换侧被排除, 并带着 warning 上报。
+    const freshness = assessFreshness(deepHistory);
+    if (freshness.warning) freshnessWarnings.push({ code: fund.code, name: fund.name, ...freshness });
+
     rankedFunds.push({
       ...fund,
       fusedSignal: fused,
       deepHistory,
+      freshness,
     });
   }
 
@@ -315,7 +336,9 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     const addThreshold = isFear ? 0 : RISK_CONFIG.addPositionThreshold;
     if (signal && (signal.signal === 'STRONG_BUY' || signal.signal === 'BUY')
         && profitPct < addThreshold
-        && cash > (isFear ? 300 : 500)) {
+        && cash > (isFear ? 300 : 500)
+        // 净值停止更新的持仓不加仓: 现价未知, 加仓金额无从折算
+        && isFreshEnoughToTrade(fundData)) {
       const addPrice = currentPrice || 1;
       const addAmount = spend(Math.min(remainingCash * RISK_CONFIG.addPositionMaxPct, isFear ? 1500 : 2000));
       if (addAmount > 0) {
@@ -365,6 +388,9 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
 
     // 跳过已持有的
     if (fundHoldings.find(h => h.code === fund.code)) continue;
+
+    // 跳过净值已停止更新的: 现价未知, 且可能已停牌/清盘, 买入指令无法成交
+    if (!isFreshEnoughToTrade(fund)) continue;
 
     const signal = fund.fusedSignal;
     if (!signal) continue;
@@ -428,11 +454,15 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   const weakHoldings = fundHoldings.filter(h => {
     if (assignedCodes.has(h.code)) return false;
     const fund = rankedFunds.find(f => f.code === h.code);
-    return fund && fund.fusedSignal && fund.fusedSignal.signal === 'WEAK';
+    if (!fund || !fund.fusedSignal || fund.fusedSignal.signal !== 'WEAK') return false;
+    // 净值已停止更新的持仓不能作为转换卖出方: 报价不可信, 赎回也未必能成交
+    return isFreshEnoughToTrade(fund);
   });
   const strongCandidates = rankedFunds.filter(f =>
     f.fusedSignal && f.fusedSignal.signal === 'STRONG_BUY' &&
-    !fundHoldings.find(h => h.code === f.code)
+    !fundHoldings.find(h => h.code === f.code) &&
+    // 不买净值已停止更新的基金: 两周没净值, 现价未知, 且可能已清盘买不进
+    isFreshEnoughToTrade(f)
   );
 
   for (let i = 0; i < Math.min(weakHoldings.length, strongCandidates.length); i++) {
@@ -467,6 +497,8 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     operations,
     marketRegime: marketRegime?.regime || 'SIDEWAYS',
     marketSentiment: marketSentiment || null,
+    // 净值新鲜度告警(停牌/清盘/数据源中断嫌疑), 供展示层提示与运维排查
+    freshnessWarnings,
     summary: {
       sell: operations.sells.length,
       partialSell: operations.partialSells.length,
@@ -481,4 +513,5 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
 
 module.exports = {
   generateAdviceV4,
+  isFreshEnoughToTrade,
 };
