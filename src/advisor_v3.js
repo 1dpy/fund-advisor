@@ -880,72 +880,147 @@ function generateSummary(decisions) {
 //  应用决策
 // ============================================================
 
+/**
+ * 把决策归一成统一结构
+ *
+ * 两套字段名并存:
+ *   V3 旧结构 (平铺在 decisions 上):  sellOrders / buyOrders / reducePositions / swapPlans / partialSwaps
+ *   V4 现结构 (包一层 operations):    sells / buys / reduces / swaps / addPositions / partialSells
+ *
+ * 历史 bug: main.js 把 V4 输出直接喂给 applyDecisions, 而这里读的是 V3 字段名,
+ *   `decisions.sellOrders.map` 直接 TypeError, `node main.js --apply` 必崩。
+ */
+function normalizeDecisions(decisions) {
+  const d = decisions || {};
+  const ops = d.operations || d;
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  return {
+    sellOrders: arr(ops.sellOrders).concat(arr(ops.sells).map(o => ({ code: o.code }))),
+    buyOrders: arr(ops.buyOrders).length ? arr(ops.buyOrders) : arr(ops.buys),
+    partialSells: arr(ops.partialSells),
+    reducePositions: arr(ops.reducePositions).length ? arr(ops.reducePositions) : arr(ops.reduces),
+    swapPlans: arr(ops.swapPlans).length ? arr(ops.swapPlans) : arr(ops.swaps),
+    partialSwaps: arr(ops.partialSwaps),
+    addPositions: arr(ops.addPositions),
+  };
+}
+
 function applyDecisions(decisions) {
   const holdings = loadHoldings();
+  const D = normalizeDecisions(decisions);
 
   // 处理全部卖出
-  const sellCodes = new Set(decisions.sellOrders.map(o => o.code));
+  const sellCodes = new Set(D.sellOrders.map(o => o.code));
   let newHoldings = holdings.filter(h => !sellCodes.has(h.code));
 
   // 处理部分卖出
-  for (const ps of decisions.partialSells) {
+  //   V4 给的是"卖多少股", V3 给的是"剩多少股/剩多少市值", 两种都要支持
+  for (const ps of D.partialSells) {
     const idx = newHoldings.findIndex(h => h.code === ps.code);
-    if (idx >= 0) {
-      newHoldings[idx].shares = ps.remainingShares;
-      newHoldings[idx].costBasis = Math.round(ps.remainingValue * 100) / 100;
-    }
+    if (idx < 0) continue;
+    const cur = newHoldings[idx];
+    const totalShares = num(cur.shares);
+    const remainingShares = ps.remainingShares != null
+      ? num(ps.remainingShares)
+      : Math.max(0, totalShares - num(ps.shares));
+    if (remainingShares <= 0) { newHoldings.splice(idx, 1); continue; }
+    // 成本按剩余份额比例结转, 不能直接用市值 (否则历史盈亏被抹平, 止盈止损失效)
+    const costPerShare = totalShares > 0 ? num(cur.costBasis) / totalShares : num(cur.buyPrice);
+    cur.shares = remainingShares;
+    cur.costBasis = Math.round(remainingShares * costPerShare * 100) / 100;
   }
 
-  // 处理减仓
-  for (const rp of decisions.reducePositions) {
+  // 处理减仓 (V4 给卖出的份额, V3 给总份额+卖出份额)
+  for (const rp of D.reducePositions) {
     const idx = newHoldings.findIndex(h => h.code === rp.code);
-    if (idx >= 0) {
-      newHoldings[idx].shares = rp.totalShares - rp.shares;
-      newHoldings[idx].costBasis = Math.round(newHoldings[idx].shares * newHoldings[idx].buyPrice * 100) / 100;
-    }
+    if (idx < 0) continue;
+    const cur = newHoldings[idx];
+    const totalShares = rp.totalShares != null ? num(rp.totalShares) : num(cur.shares);
+    const remaining = Math.max(0, totalShares - num(rp.shares));
+    const costPerShare = totalShares > 0 ? num(cur.costBasis) / totalShares : num(cur.buyPrice);
+    if (remaining <= 0) { newHoldings.splice(idx, 1); continue; }
+    cur.shares = remaining;
+    cur.costBasis = Math.round(remaining * costPerShare * 100) / 100;
   }
 
   // 处理全部转换
-  for (const sp of decisions.swapPlans) {
+  for (const sp of D.swapPlans) {
     newHoldings = newHoldings.filter(h => h.code !== sp.sellCode);
-    newHoldings.push({
-      code: sp.buyCode, name: sp.buyName, type: 'fund',
-      buyPrice: sp.buyPrice,
-      shares: sp.buyAmount / sp.buyPrice,
-      costBasis: sp.buyAmount,
-      buyDate: new Date().toISOString().split('T')[0],
-    });
+    const p = safePrice(sp.buyPrice, sp.buyAmount, sp.shares);
+    if (p <= 0) continue; // 没有净值就无法折份额, 宁可不写也不写 NaN
+    newHoldings.push(mkHolding(sp.buyCode, sp.buyName, sp.buyAmount, p));
   }
 
   // 处理部分转换
-  for (const ps of decisions.partialSwaps) {
+  for (const ps of D.partialSwaps) {
     const idx = newHoldings.findIndex(h => h.code === ps.sellCode);
     if (idx >= 0) {
-      newHoldings[idx].shares = ps.remainingShares;
-      newHoldings[idx].costBasis = Math.round(ps.remainingShares * newHoldings[idx].buyPrice * 100) / 100;
+      const cur = newHoldings[idx];
+      const totalShares = num(cur.shares);
+      const remaining = ps.remainingShares != null ? num(ps.remainingShares) : totalShares;
+      const costPerShare = totalShares > 0 ? num(cur.costBasis) / totalShares : num(cur.buyPrice);
+      if (remaining <= 0) newHoldings.splice(idx, 1);
+      else {
+        cur.shares = remaining;
+        cur.costBasis = Math.round(remaining * costPerShare * 100) / 100;
+      }
     }
-    newHoldings.push({
-      code: ps.buyCode, name: ps.buyName, type: 'fund',
-      buyPrice: ps.buyPrice,
-      shares: ps.buyAmount / ps.buyPrice,
-      costBasis: ps.buyAmount,
-      buyDate: new Date().toISOString().split('T')[0],
-    });
+    const p = safePrice(ps.buyPrice, ps.buyAmount, ps.shares);
+    if (p <= 0) continue;
+    newHoldings.push(mkHolding(ps.buyCode, ps.buyName, ps.buyAmount, p));
   }
 
-  // 处理买入
-  for (const order of [...decisions.buyOrders, ...decisions.addPositions]) {
-    newHoldings.push({
-      code: order.code, name: order.name, type: order.type,
-      buyPrice: order.price,
-      shares: order.amount / order.price,
-      costBasis: order.amount,
-      buyDate: new Date().toISOString().split('T')[0],
-    });
+  // 处理买入 / 加仓
+  //   加仓的基金本来就持有 → 必须合并进原条目。
+  //   历史 bug: 直接 push 一条新记录, holdings.json 出现两条同 code,
+  //   之后 find() 只认第一条, 加仓的钱等于凭空消失。
+  for (const order of [...D.buyOrders, ...D.addPositions]) {
+    const amount = num(order.amount);
+    if (amount <= 0) continue;
+    const p = safePrice(order.price, amount, order.shares);
+    if (p <= 0) continue; // 净值缺失 → 不写 (宁可漏记也不能写 NaN 污染持仓)
+
+    const idx = newHoldings.findIndex(h => h.code === order.code);
+    if (idx >= 0) {
+      const cur = newHoldings[idx];
+      const addShares = amount / p;
+      const addCost = amount;
+      const totalShares = num(cur.shares) + addShares;
+      const totalCost = num(cur.costBasis) + addCost;
+      cur.shares = Math.round(totalShares * 10000) / 10000;
+      cur.costBasis = Math.round(totalCost * 100) / 100;
+      // 摊薄后的买入均价 (份额>0 才有意义)
+      cur.buyPrice = totalShares > 0 ? Math.round((totalCost / totalShares) * 10000) / 10000 : cur.buyPrice;
+      cur.buyDate = new Date().toISOString().split('T')[0]; // 重算持有期, 免得刚加仓就被短费率挡住
+      continue;
+    }
+    newHoldings.push(mkHolding(order.code, order.name, amount, p, order.type));
   }
 
   saveHoldings(newHoldings);
   return newHoldings;
+}
+
+// --- applyDecisions 用到的两个小工具 ---
+// 数字兜底: 脏数据/缺失字段一律当 0, 不让 NaN 进 holdings.json
+function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+// 成交价: 优先用显式 price, 其次用 amount/shares 反推, 都没有就返回 0 (调用方跳过)
+function safePrice(price, amount, shares) {
+  const p = num(price);
+  if (p > 0) return p;
+  const a = num(amount), s = num(shares);
+  return (s > 0 && a > 0) ? a / s : 0;
+}
+function mkHolding(code, name, amount, price, type) {
+  return {
+    code,
+    name: name || code,
+    type: type || 'fund', // V4 的买入指令不带 type, 缺失会写成 undefined
+    buyPrice: price,
+    shares: Math.round((amount / price) * 10000) / 10000,
+    costBasis: Math.round(amount * 100) / 100,
+    buyDate: new Date().toISOString().split('T')[0],
+  };
 }
 
 module.exports = {

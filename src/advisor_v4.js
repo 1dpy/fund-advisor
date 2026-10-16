@@ -324,6 +324,9 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
           code: holding.code,
           name: holding.name,
           amount: addAmount,
+          // price 必须带上: applyDecisions 回写持仓时要用 amount/price 算份额,
+          //   缺了会算出 NaN 写进 holdings.json
+          price: addPrice,
           shares: Math.floor(addAmount / addPrice),
           reason: `跌${(Math.abs(profitPct) * 100).toFixed(1)}%+ML看多${isFear ? `·市场${sentimentLabel}逆向小加仓` : ''}`,
           t1: t1ForHolding,
@@ -436,14 +439,20 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     const weak = weakHoldings[i];
     const strong = strongCandidates[i];
     const weakFund = rankedFunds.find(f => f.code === weak.code);
-    const sellValue = weak.shares * (weakFund?.price || weakFund?.nav || 0);
+    const sellPrice = weakFund?.price || weakFund?.nav || weak.buyPrice || 0;
+    const sellValue = weak.shares * sellPrice;
+    // 买入价也要带上: 回写持仓时要按目标基金净值折份额
+    const buyPrice = strong.price || strong.nav || 0;
 
     operations.swaps.push({
       action: 'SWAP',
       sellCode: weak.code,
       sellName: weak.name,
+      sellPrice,
+      sellShares: weak.shares,
       buyCode: strong.code,
       buyName: strong.name,
+      buyPrice,
       sellValue,
       buyAmount: sellValue,
       reason: `${weak.name}信号弱 → ${strong.name}信号强`,
