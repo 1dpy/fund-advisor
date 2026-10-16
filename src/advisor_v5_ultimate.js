@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { BUDGET, WATCHLIST, FEE_CONFIG, RISK_CONFIG, STRATEGY, STRATEGY_CONFIG, PREFERRED_SECTORS, MAX_DEPLOY_SECTORS, REALTIME_PICK_COUNT } = require('./config');
 const RM = require('./risk_metrics');
-const { isTradingDay } = require('./t1_calendar');
+const { isTradingDay, getRedemptionFeeRate } = require('./t1_calendar');
 
 const ROOT = path.join(__dirname, '..');
 const HOLDINGS_PATH = path.join(ROOT, 'holdings.json');
@@ -90,11 +90,9 @@ function selectConversionTargets(funds, totalAsset, alreadyConverted) {
     .sort((a, b) => (b.value / totalAsset) - (a.value / totalAsset));
 }
 
+// 费率档位统一由 t1_calendar.getRedemptionFeeRate 提供 (此前 V3/V5/V6 各有一份)
 function redemptionFeeRate(holding) {
-  const d = holdingDays(holding.buyDate);
-  if (d < 7) return FEE_CONFIG.fund.redemptionRate.under7;
-  if (d < 30) return FEE_CONFIG.fund.redemptionRate.under30;
-  return 0;
+  return getRedemptionFeeRate(holdingDays(holding.buyDate)).rate;
 }
 
 // ============================================================

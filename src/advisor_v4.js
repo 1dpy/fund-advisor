@@ -36,6 +36,9 @@ const { getSettlementTimeline } = require('./t1_calendar');
 async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegime, marketSentiment) {
   const { funds, indexes, breadth, northFlow } = data;
   const cash = BUDGET - holdings.reduce((sum, h) => sum + (h.costBasis || 0), 0);
+  // 现金条目(余额宝/现金)是"可用的钱", 不是可交易的基金:
+  //   V5/V6 都过滤了, V4 之前没有 → 余额宝会被当成一只基金产出买卖指令
+  const fundHoldings = holdings.filter(h => h.type !== 'cash');
   const t1Info = getSettlementTimeline('fund', new Date());
 
   // 现金预算账本: 加仓/买入统一从这里出账, 保证建议买入总额不超过可用现金。
@@ -143,7 +146,10 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   const trailingStopPct = isBear ? RISK_CONFIG.trailingStopPctBear
                              : RISK_CONFIG.trailingStopPct;
 
-  for (const holding of holdings) {
+  for (const holding of fundHoldings) {
+    // 逐持仓结算时间线: QDII(纳指/标普等) 确认与到账都比普通基金晚一天,
+    //   原先全局按 'fund' 算, 会给 QDII 标错到账日
+    const t1ForHolding = getSettlementTimeline(holding.type === 'qdii' ? 'qdii' : 'fund', new Date());
     const fundData = rankedFunds.find(f => f.code === holding.code);
     const signal = fundData?.fusedSignal;
     const currentPrice = fundData?.price || fundData?.nav || holding.buyPrice || 0;
@@ -173,7 +179,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
         shares: holding.shares,
         amount: holding.shares * sellPrice,
         reason: `止损(${(profitPct * 100).toFixed(1)}%)`,
-        t1: t1Info,
+        t1: t1ForHolding,
         urgency: 'HIGH',
       });
       continue;
@@ -189,7 +195,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
         shares: holding.shares,
         amount: holding.shares * sellPrice,
         reason: `止盈天花板(${(profitPct * 100).toFixed(1)}%)`,
-        t1: t1Info,
+        t1: t1ForHolding,
         urgency: 'MEDIUM',
       });
       continue;
@@ -209,7 +215,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
           reducePct: 30,
           amount: reduceShares * sellPrice,
           reason: `ML看空(置信${(signal.confidence * 100).toFixed(0)}%), 但市场${sentimentLabel}→逆向减仓不空仓`,
-          t1: t1Info,
+          t1: t1ForHolding,
           urgency: 'MEDIUM',
         });
       } else {
@@ -220,7 +226,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
           shares: holding.shares,
           amount: holding.shares * sellPrice,
           reason: `ML看空(置信${(signal.confidence * 100).toFixed(0)}%)`,
-          t1: t1Info,
+          t1: t1ForHolding,
           urgency: 'HIGH',
         });
       }
@@ -238,7 +244,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
         shares: holding.shares,
         amount: holding.shares * sellPrice,
         reason: `移动止盈(峰值${(peakProfitPct * 100).toFixed(1)}%→回撤${(drawdownFromPeak * 100).toFixed(1)}%)`,
-        t1: t1Info,
+        t1: t1ForHolding,
         urgency: 'MEDIUM',
       });
       continue;
@@ -256,7 +262,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
         sellPct: RISK_CONFIG.partialTakeProfitPct * 100,
         amount: sellShares * sellPrice,
         reason: `部分止盈(${regime}体制,${(profitPct * 100).toFixed(1)}%)`,
-        t1: t1Info,
+        t1: t1ForHolding,
         urgency: 'MEDIUM',
       });
       continue;
@@ -282,7 +288,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
           reducePct: isGreed ? 40 : 30,
           amount: reduceShares * sellPrice,
           reason: `信号减弱(置信${(signal.confidence * 100).toFixed(0)}%)${isGreed ? '·市场过热减仓40%' : ''}`,
-          t1: t1Info,
+          t1: t1ForHolding,
           urgency: 'LOW',
         });
       }
@@ -299,7 +305,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
         shares: holding.shares,
         amount: holding.shares * sellPrice,
         reason: `${regime}体制超时(${holdingDays}天)`,
-        t1: t1Info,
+        t1: t1ForHolding,
         urgency: 'LOW',
       });
       continue;
@@ -320,7 +326,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
           amount: addAmount,
           shares: Math.floor(addAmount / addPrice),
           reason: `跌${(Math.abs(profitPct) * 100).toFixed(1)}%+ML看多${isFear ? `·市场${sentimentLabel}逆向小加仓` : ''}`,
-          t1: t1Info,
+          t1: t1ForHolding,
           urgency: 'MEDIUM',
         });
         continue;
@@ -348,14 +354,14 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   // 放宽不得超过实际可用现金: 恐慌时 1.25 倍会把预算顶到 availableCash 之上,
   // 变成"建议买入 > 手里有钱", 指令根本执行不了
   buyBudget = Math.min(buyBudget, availableCash);
-  const maxPositions = RISK_CONFIG.maxTotalPositions - holdings.length + operations.sells.length;
+  const maxPositions = RISK_CONFIG.maxTotalPositions - fundHoldings.length + operations.sells.length;
   let buyCount = 0;
 
   for (const fund of rankedFunds) {
     if (buyBudget < 100 || buyCount >= maxPositions) break;
 
     // 跳过已持有的
-    if (holdings.find(h => h.code === fund.code)) continue;
+    if (fundHoldings.find(h => h.code === fund.code)) continue;
 
     const signal = fund.fusedSignal;
     if (!signal) continue;
@@ -416,14 +422,14 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     ...operations.reduces.map(o => o.code),
     ...operations.addPositions.map(o => o.code),
   ]);
-  const weakHoldings = holdings.filter(h => {
+  const weakHoldings = fundHoldings.filter(h => {
     if (assignedCodes.has(h.code)) return false;
     const fund = rankedFunds.find(f => f.code === h.code);
     return fund && fund.fusedSignal && fund.fusedSignal.signal === 'WEAK';
   });
   const strongCandidates = rankedFunds.filter(f =>
     f.fusedSignal && f.fusedSignal.signal === 'STRONG_BUY' &&
-    !holdings.find(h => h.code === f.code)
+    !fundHoldings.find(h => h.code === f.code)
   );
 
   for (let i = 0; i < Math.min(weakHoldings.length, strongCandidates.length); i++) {

@@ -22,7 +22,7 @@ const path = require('path');
 const { BUDGET, FEE_CONFIG } = require('./config');
 const { fetchFundHistory } = require('./fetcher');
 // 交易日判断统一走 t1_calendar (含节假日与调休补班), 不在这里自己判断星期几
-const { isTradingDay } = require('./t1_calendar');
+const { isTradingDay, getRedemptionFeeRate } = require('./t1_calendar');
 
 const ROOT = path.join(__dirname, '..');
 const HOLDINGS_PATH = path.join(ROOT, 'holdings.json');
@@ -98,11 +98,9 @@ function classifySector(name) {
   if (n.includes('黄金') || n.includes('债券') || n.includes('货币') || n.includes('余额宝')) return 'defense';
   return 'growth';
 }
+// 费率档位统一由 t1_calendar.getRedemptionFeeRate 提供 (此前 V3/V5/V6 各有一份)
 function redemptionFeeRate(h) {
-  const d = holdingDays(h.buyDate);
-  if (d < 7) return FEE_CONFIG.fund.redemptionRate.under7;
-  if (d < 30) return FEE_CONFIG.fund.redemptionRate.under30;
-  return 0;
+  return getRedemptionFeeRate(holdingDays(h.buyDate)).rate;
 }
 function isPendingFullConversion(h) {
   const notes = (h.notes || '').toLowerCase();

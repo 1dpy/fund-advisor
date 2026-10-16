@@ -57,6 +57,9 @@ jobs:
       - name: V4 默认引擎单测 (止损/止盈/现金预算/SWAP指令一致性)
         run: node --trace-warnings test/advisor_v4.test.js 2>&1 | tee /tmp/v4.log
 
+      - name: 交易日历 + 赎回费单测 (含跨年 tripwire)
+        run: node --trace-warnings test/t1_calendar.test.js 2>&1 | tee /tmp/calendar.log
+
       - name: 决策可复现性测试 (同数据两次运行必须同结论)
         run: node --trace-warnings test/reproducibility.test.js 2>&1 | tee /tmp/repro.log
 
@@ -113,6 +116,7 @@ jobs:
             echo "===== selection.log ====="; cat /tmp/selection.log 2>/dev/null || echo "(无 selection.log)"
             echo "===== aggressive.log ====="; cat /tmp/aggressive.log 2>/dev/null || echo "(无 aggressive.log)"
             echo "===== v4.log ====="; cat /tmp/v4.log 2>/dev/null || echo "(无 v4.log)"
+            echo "===== calendar.log ====="; cat /tmp/calendar.log 2>/dev/null || echo "(无 calendar.log)"
             echo "===== repro.log ====="; cat /tmp/repro.log 2>/dev/null || echo "(无 repro.log)"
             echo "===== fuzz.log ====="; cat /tmp/fuzz.log 2>/dev/null || echo "(无 fuzz.log)"
             echo '```'

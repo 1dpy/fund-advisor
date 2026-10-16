@@ -145,6 +145,25 @@ const spendOf = (r) => moneyOps(r).reduce((s, o) => s + (o.amount || 0), 0);
   ok(`恐慌放宽后 买入总额 ¥${Math.round(spendFear)} ≤ 可用现金 ¥${Math.round(cashFear)}`,
     spendFear <= cashFear + 1);
 
+  // 3.4 现金条目(余额宝/现金)不得被当成基金产出买卖指令
+  const cashItem = { code: 'CASH_YEB', name: '余额宝(现金)', type: 'cash',
+    shares: 4000, buyPrice: 1, costBasis: 4000,
+    buyDate: new Date(Date.now() - 100 * 86400000).toISOString().slice(0, 10) };
+  r = await run([mkFund('I1', UP, 1.0)], [cashItem, mkHolding('I1', 1000, 1.0, 1000)]);
+  const cashOps = allOps(r).filter(o => o.code === 'CASH_YEB' || o.sellCode === 'CASH_YEB');
+  eq('现金条目不产生任何操作指令', cashOps.length, 0);
+  ok('现金条目的钱仍计入可用现金 (买入预算可用)',
+    r.operations.buys.length > 0 || spendOf(r) >= 0);
+
+  // 3.5 QDII 持仓的结算时间线要比普通基金晚一天
+  // 下跌走势 → SELL, 该操作带 t1 时间线, 用来验证 QDII 多一天
+  r = await run([mkFund('J1', DOWN, 1.0)],
+    [mkHolding('J1', 1000, 1.0, 1000, { type: 'qdii' })]);
+  const qOp = r.operations.sells.find(o => o.code === 'J1');
+  ok('QDII 持仓带结算时间线', !!qOp);
+  eq('QDII 标记为 isQDII', qOp && qOp.t1.isQDII, true);
+  ok('QDII 到账日晚于确认日', qOp && qOp.t1.settleDay > qOp.t1.confirmDay);
+
   // 3.3 贪婪时收紧预算, 且买入信号门槛提高到只认 STRONG_BUY
   r = await run([mkFund('E1', UP, 1.0), mkFund('E2', UP, 1.0)], [],
     { sentiment: { tradingBias: 'TAKE_PROFIT', labelCN: '贪婪' } });

@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 
 const { generateUltimatePortfolioAdvice } = require('../src/advisor_v5_ultimate');
+const { isTradingDay } = require('../src/t1_calendar');
 const rt = require('../src/realtime_quotes');
 const fl = require('../src/factor_library');
 const wf = require('../src/walk_forward_pro');
@@ -39,19 +40,30 @@ try {
 } catch (e) { /* 无元参数时用默认 2 */ }
 
 assert.ok(Array.isArray(advice.operations), 'operations 应为数组');
-assert.ok(Array.isArray(advice.realtimePicks), 'realtimePicks 应为数组');
-assert.strictEqual(advice.realtimePicks.length, metaTopK,
-  `应动态挑选当日最强 ${metaTopK} 只 (自迭代 topK=${metaTopK}), 实际=` + advice.realtimePicks.length);
 
-// 验证挑出的确实是综合分最高的前 2 只（数据驱动 topK，非写死固定基金）
-const picked = advice.realtimePicks.map(p => p.code).sort();
-const expect = fakeScores.slice(0, metaTopK).map(p => p.code).sort();
-assert.deepStrictEqual(picked, expect,
-  `动态选基应取综合分 Top${metaTopK}`);
+// ⚠️ 引擎有"非交易日不出指令"的闸门, 若不区分分支, 每个周末/节假日 CI 都会误报红灯。
+//    交易日 → 校验动态选基; 非交易日 → 只校验休市契约 (选基逻辑由 strategy_selection.test.js 覆盖)
+if (!isTradingDay()) {
+  assert.strictEqual(advice.regime, 'WEEKEND', '非交易日 regime 应为 WEEKEND');
+  assert.strictEqual(advice.operations.length, 0, '非交易日不应产出任何操作');
+  assert.ok(typeof advice.message === 'string' && advice.message.length > 0, '休市应有提示语');
+  console.log('   ⚠️ 今日非交易日 → 校验休市契约 (选基逻辑见 strategy_selection.test.js)');
+} else {
+  assert.ok(Array.isArray(advice.realtimePicks), 'realtimePicks 应为数组');
+  assert.strictEqual(advice.realtimePicks.length, metaTopK,
+    `应动态挑选当日最强 ${metaTopK} 只 (自迭代 topK=${metaTopK}), 实际=` + advice.realtimePicks.length);
+
+  // 验证挑出的确实是综合分最高的前 N 只（数据驱动 topK，非写死固定基金）
+  const picked = advice.realtimePicks.map(p => p.code).sort();
+  const expect = fakeScores.slice(0, metaTopK).map(p => p.code).sort();
+  assert.deepStrictEqual(picked, expect,
+    `动态选基应取综合分 Top${metaTopK}`);
+}
 
 console.log('✅ smoke test 通过');
 console.log('   operations =', advice.operations.length);
-console.log(`   realtimePicks(Top${metaTopK}) =`, advice.realtimePicks.map(p => `${p.code}:${p.sector}`).join(', '));
+console.log(`   realtimePicks(Top${metaTopK}) =`,
+  Array.isArray(advice.realtimePicks) ? advice.realtimePicks.map(p => `${p.code}:${p.sector}`).join(', ') : '(休市, 无选基)');
 
 // 3) 新量化模块可加载且纯函数可用 (不联网)
 assert.strictEqual(typeof fl.compositeScore, 'function', 'factor_library.compositeScore 应导出');

@@ -10,31 +10,110 @@
  *   场外基金实时估值已较准确, 是最佳操作时点
  */
 
-// ============================================================
-//  节假日判断 (2026年中国法定节假日 + 调休)
-// ============================================================
+const fs = require('fs');
+const path = require('path');
+const { FEE_CONFIG } = require('./config');
 
-// 2026年休市日 (元旦/春节/清明/劳动/端午/中秋/国庆)
-const HOLIDAYS_2026 = [
-  '2026-01-01', '2026-01-02',                     // 元旦
-  '2026-02-16', '2026-02-17', '2026-02-18',       // 春节
-  '2026-02-19', '2026-02-20', '2026-02-23',       // 春节调休
-  '2026-04-06', '2026-04-07', '2026-04-08',       // 清明
-  '2026-05-01', '2026-05-04', '2026-05-05',       // 劳动节
-  '2026-06-19', '2026-06-22',                     // 端午
-  '2026-09-25', '2026-09-28',                     // 中秋调休
-  '2026-10-01', '2026-10-02', '2026-10-05',       // 国庆
-  '2026-10-06', '2026-10-07', '2026-10-08',       // 国庆
-];
+// ============================================================
+//  节假日判断 — 数据驱动 (data/trading_calendar.json)
+// ============================================================
+// 以前只有 2026 一张硬编码表, 跨年后会静默把节假日当成交易日。
+// 现在按年份存 JSON (随仓库发布), 并对"未录入/预填"的年份给出显式警告。
+//
+// 两个位置, 后者优先:
+//   src/trading_calendar.json  — 随仓库发布 (data/ 被 .gitignore 排除, 不能放那边)
+//   data/trading_calendar.json — 本地覆盖, 国务院发布新一年安排后可直接改这里, 不用动仓库
+const BUILTIN_CALENDAR_FILE = path.join(__dirname, 'trading_calendar.json');
+const USER_CALENDAR_FILE = path.join(__dirname, '..', 'data', 'trading_calendar.json');
 
-// 2026年周末补班日 (调休上班, 股市开盘)
-const WORKDAY_WEEKENDS_2026 = [
-  '2026-02-14',  // 春节前周六补班
-  '2026-02-28',  // 春节后周六补班
-  '2026-04-26',  // 劳动节前周日补班
-  '2026-09-27',  // 国庆前周日补班
-  '2026-10-10',  // 国庆后周六补班
-];
+// 兜底: JSON 缺失/损坏时仍能用 2026 数据 (与迁移前行为一致)
+const FALLBACK = {
+  years: {
+    '2026': {
+      holidays: [
+        '2026-01-01', '2026-01-02',                     // 元旦
+        '2026-02-16', '2026-02-17', '2026-02-18',       // 春节
+        '2026-02-19', '2026-02-20', '2026-02-23',       // 春节调休
+        '2026-04-06', '2026-04-07', '2026-04-08',       // 清明
+        '2026-05-01', '2026-05-04', '2026-05-05',       // 劳动节
+        '2026-06-19', '2026-06-22',                     // 端午
+        '2026-09-25', '2026-09-28',                     // 中秋调休
+        '2026-10-01', '2026-10-02', '2026-10-05',       // 国庆
+        '2026-10-06', '2026-10-07', '2026-10-08',       // 国庆
+      ],
+      workdayWeekends: [
+        '2026-02-14', '2026-02-28', '2026-04-26', '2026-09-27', '2026-10-10',
+      ],
+      provisional: false,
+    },
+  },
+};
+
+function loadCalendar() {
+  // 先读内置 (保证 clone 下来就能用), 再读本地覆盖 (允许不动仓库打补丁)
+  let merged = null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(BUILTIN_CALENDAR_FILE, 'utf-8'));
+    if (raw && raw.years && Object.keys(raw.years).length > 0) merged = raw;
+  } catch (e) { /* 内置文件缺失 → 用兜底表 */ }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(USER_CALENDAR_FILE, 'utf-8'));
+    if (raw && raw.years && Object.keys(raw.years).length > 0) {
+      merged = merged
+        ? { ...merged, years: { ...merged.years, ...raw.years } }
+        : raw;
+    }
+  } catch (e) { /* 无本地覆盖, 正常 */ }
+
+  return merged || FALLBACK;
+}
+
+const CALENDAR = loadCalendar();
+
+/**
+ * 某一年是否有假期数据
+ * @param {number|string} year
+ */
+function isYearCovered(year) {
+  return Object.prototype.hasOwnProperty.call(CALENDAR.years, String(year));
+}
+
+/** 已录入的年份列表 (升序) */
+function coveredYears() {
+  return Object.keys(CALENDAR.years).map(Number).sort((a, b) => a - b);
+}
+
+/**
+ * 日历状态 — 让调用方能显式提示"这一年的假期表不可靠"
+ * @returns {{covered: boolean, provisional: boolean, warning: string|null}}
+ */
+function calendarStatus(date) {
+  const y = String((date || new Date()).getFullYear());
+  const entry = CALENDAR.years[y];
+  if (!entry) {
+    return {
+      covered: false,
+      provisional: false,
+      warning: `⚠️ ${y} 年交易日历未录入, 交易日按"周一至周五"粗略判定 (请补 src/trading_calendar.json 或 data/trading_calendar.json)`,
+    };
+  }
+  if (entry.provisional) {
+    return {
+      covered: true,
+      provisional: true,
+      warning: `⚠️ ${y} 年假期表为预填${entry.source ? '(' + entry.source + ')' : ''}, 请核对后使用`,
+    };
+  }
+  return { covered: true, provisional: false, warning: null };
+}
+
+// 2026 常量保留导出, 兼容旧引用
+const HOLIDAYS_2026 = (CALENDAR.years['2026'] || FALLBACK.years['2026']).holidays;
+
+function yearEntry(d) {
+  return CALENDAR.years[String(d.getFullYear())] || null;
+}
 
 function formatDate(d) {
   const y = d.getFullYear();
@@ -50,11 +129,12 @@ function isTradingDay(date) {
   const d = date || new Date();
   const weekday = d.getDay();
   const dateStr = formatDate(d);
+  const entry = yearEntry(d);
 
   // 周末补班日: 交易
-  if (WORKDAY_WEEKENDS_2026.includes(dateStr)) return true;
+  if (entry && (entry.workdayWeekends || []).includes(dateStr)) return true;
   // 节假日: 不交易
-  if (HOLIDAYS_2026.includes(dateStr)) return false;
+  if (entry && (entry.holidays || []).includes(dateStr)) return false;
   // 周末: 不交易
   if (weekday === 0 || weekday === 6) return false;
   return true;
@@ -158,6 +238,51 @@ function getSettlementTimeline(fundType = 'fund', opTime = new Date()) {
       : `赎回: ${tDayStr} 15:00前 → T+1(${confirmStr})确认 → T+2(${settleStr})资金到账`,
     // 最佳操作窗口
     bestWindow: getBestOpWindow(now, isToday, beforeCutoff),
+    // 日历可靠性: 未录入年份只按工作日判定, 必须显式提示, 不能假装准确
+    calendarStatus: calendarStatus(now),
+  };
+}
+
+// ============================================================
+//  赎回费 (C类) — V3/V5/V6 共用同一套档位
+// ============================================================
+
+/**
+ * 按持有天数取赎回费率
+ * 档位来自 FEE_CONFIG: <7天 1.5%(惩罚性), <30天 0.5%, ≥30天 0
+ * @param {number} days - 自然日持有天数
+ * @returns {{rate: number, level: 'under7'|'under30'|'free'}}
+ */
+function getRedemptionFeeRate(days) {
+  const d = Number(days);
+  if (!Number.isFinite(d) || d < 0) return { rate: FEE_CONFIG.fund.redemptionRate.under7, level: 'under7' };
+  if (d < 7) return { rate: FEE_CONFIG.fund.redemptionRate.under7, level: 'under7' };
+  if (d < 30) return { rate: FEE_CONFIG.fund.redemptionRate.under30, level: 'under30' };
+  return { rate: FEE_CONFIG.fund.redemptionRate.over30, level: 'free' };
+}
+
+/**
+ * 是否值得再等几天把赎回费降到下一档
+ * 判断口径: 只省小钱却要拖很久(>10天)不值得; 已经在亏得比手续费还多时不值得
+ * @param {number} days - 持有天数
+ * @param {number} currentProfit - 当前盈亏比例 (0.05 = +5%)
+ */
+function shouldWaitForFeeReduction(days, currentProfit = 0) {
+  const { rate, level } = getRedemptionFeeRate(days);
+  if (rate <= 0) return { shouldWait: false, daysToWait: 0, reason: '' };
+
+  const daysToWait = level === 'under7' ? 7 - days : 30 - days;
+  if (daysToWait > 10) {
+    return { shouldWait: false, daysToWait, reason: '' };
+  }
+  // 亏损幅度已超过手续费的两倍 → 别为省手续费硬扛
+  if (typeof currentProfit === 'number' && currentProfit < -rate * 2) {
+    return { shouldWait: false, daysToWait, reason: '' };
+  }
+  return {
+    shouldWait: true,
+    daysToWait,
+    reason: `持有${days}天, 赎回费${(rate * 100).toFixed(1)}%; 再等${daysToWait}天可降至下一档`,
   };
 }
 
@@ -184,5 +309,10 @@ module.exports = {
   nextTradingDay,
   currentOrNextTradingDay,
   getSettlementTimeline,
+  getRedemptionFeeRate,
+  shouldWaitForFeeReduction,
+  isYearCovered,
+  coveredYears,
+  calendarStatus,
   HOLIDAYS_2026,
 };
