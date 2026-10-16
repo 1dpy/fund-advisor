@@ -487,4 +487,10 @@ function initHoldings() {
 }
 
 initHoldings();
-main();
+// main() 内部的 try 只覆盖 135 行之后; 前面的 --strategy 独立通道等若抛错,
+// 会变成 unhandled rejection 把进程直接崩掉(没有友好提示, 退出码也不可控)
+main().catch((err) => {
+  console.error('❌ 系统错误(未捕获):', err && err.message ? err.message : err);
+  if (err && err.stack) console.error(err.stack);
+  process.exit(1);
+});

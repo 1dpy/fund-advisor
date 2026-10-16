@@ -161,6 +161,20 @@ function formatDingtalkV4(decisions) {
     lines.push('');
   }
 
+  // 数据新鲜度告警: 大面积"没有买入建议"很可能是数据断了而不是行情不好,
+  // 推送里必须说清楚, 否则手机上只看到一堆"持有"会误判
+  const fw = Array.isArray(decisions.freshnessWarnings) ? decisions.freshnessWarnings : [];
+  const deadOnes = fw.filter(w => w.level === 'dead');
+  if (deadOnes.length > 0) {
+    lines.push(`### ⚠️ 数据告警`);
+    lines.push(`> ${deadOnes.length} 只基金净值已停止更新, 已排除出买入/加仓/转换:`);
+    for (const w of deadOnes.slice(0, 5)) {
+      lines.push(`> - ${w.code} ${w.name || ''} 最后净值 ${w.lastDate || '未知'}(${w.ageTradingDays} 个交易日前)`);
+    }
+    if (deadOnes.length > 5) lines.push(`> - ...另有 ${deadOnes.length - 5} 只`);
+    lines.push('');
+  }
+
   // 汇总
   const s = decisions.summary;
   lines.push('---');
