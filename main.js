@@ -23,6 +23,7 @@ const { fetchAllData } = require('./src/fetcher');
 const { rankFundsV2 } = require('./src/analyzer_v2');
 const { applyDecisions, loadHoldings, saveHoldings } = require('./src/advisor_v3');
 const { generateAdviceV4 } = require('./src/advisor_v4');
+const { recordStopLossSells } = require('./src/portfolio_book');
 const { formatOperations, printOperations } = require('./src/reporter_v4');
 const { parseHoldingsText, interactiveTextInput } = require('./src/parser');
 const { sendMarkdown, formatDingtalkV4 } = require('./src/dingtalk_v4');
@@ -438,6 +439,16 @@ async function main() {
       confidence: analysisResult.marketRegime?.confidence || 50,
     };
     const decisions = await generateAdviceV4(allData, currentHoldings, mlEnsemble, usImpact, marketRegime, marketSentiment);
+
+    // 12b. 记录止损卖出, 供下一轮买入前的冷却期判断
+    //   只记止损(不含止盈/超时): 止损说明判断被打脸, 短期不该买回来;
+    //   止盈是趋势兑现, 后续趋势恢复可以再进。
+    try {
+      const stopCodes = decisions.operations.sells
+        .filter(o => typeof o.reason === 'string' && o.reason.includes('止损'))
+        .map(o => o.code);
+      recordStopLossSells(stopCodes);
+    } catch (e) { /* 冷却记录失败不影响出建议 */ }
 
     // 12. 输出操作指令
     if (showJson) {

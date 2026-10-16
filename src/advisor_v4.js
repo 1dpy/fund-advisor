@@ -23,6 +23,11 @@ const { predictARIMA } = require('./quant/arima_lite');
 const { extractFeatures } = require('./feature_engine');
 const { resample, hurstExponent, getCachedHistory } = require('./data_collector');
 const { getSettlementTimeline } = require('./t1_calendar');
+const {
+  buildBook, profitRatio, profitRatioDetailed, annualizedVol, volPositionScale,
+  adaptiveStopLoss, sectorOf, sectorExposure, clamp, num,
+  loadRecentSells, inSellCooldown,
+} = require('./portfolio_book');
 const { assessFreshness } = require('./data_freshness');
 
 /**
@@ -38,6 +43,28 @@ function isFreshEnoughToTrade(fund) {
 }
 
 /**
+ * 成长/科技类赛道 — 计入 maxTechConcentration。
+ * globalTech(QDII) 与 defense 不计入, 与 config 注释口径一致("QDII广发不算入")。
+ */
+const GROWTH_SECTORS = new Set(['aiChip', 'newEnergy', 'internetTech', 'techBase', 'satellite']);
+
+/**
+ * 候选排序分: 预期涨幅 × 置信度 × 波动惩罚 + 技术评分
+ *
+ * 波动惩罚的意义: 同样预期 +3%, 年化波动 60% 的基金和 20% 的基金不是一回事。
+ *   以 30% 年化波动为中性, 波动越高打折越多(系数限幅 0.5~1.5)。
+ */
+function rankScore(fund) {
+  const sig = fund?.fusedSignal;
+  if (!sig) return -Infinity;
+  const expectedPct = num(sig.prediction) * 100;          // 预期涨幅(百分点)
+  const conf = clamp(num(sig.confidence) || 0.5, 0.15, 0.95);
+  const vol = annualizedVol(fund.history || fund.deepHistory);
+  const volPenalty = vol > 0 ? clamp(0.30 / vol, 0.5, 1.5) : 1.0;
+  return expectedPct * conf * volPenalty * 100 + num(fund.score) * 0.3;
+}
+
+/**
  * V4 主决策函数
  * @param {Object} data - 全部市场数据 (funds, indexes, breadth, etc.)
  * @param {Object} holdings - 当前持仓
@@ -48,15 +75,19 @@ function isFreshEnoughToTrade(fund) {
  */
 async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegime, marketSentiment) {
   const { funds, indexes, breadth, northFlow } = data;
-  const cash = BUDGET - holdings.reduce((sum, h) => sum + (h.costBasis || 0), 0);
-  // 现金条目(余额宝/现金)是"可用的钱", 不是可交易的基金:
-  //   V5/V6 都过滤了, V4 之前没有 → 余额宝会被当成一只基金产出买卖指令
-  const fundHoldings = holdings.filter(h => h.type !== 'cash');
+
+  // ★ 组合账本: 现金 / 市值 / 仓位的唯一口径
+  //   原实现 `BUDGET - ΣcostBasis` 把余额宝的 costBasis 也算成"已投基金成本",
+  //   实测算出 -798 → 归零, 买入循环 buyBudget<100 直接 break, 引擎从不产出买入指令。
+  //   现在: 可投 = min(手头现金, 预算剩余额度), 且按市值而非成本衡量已投。
+  const book = buildBook(holdings, BUDGET);
+  const fundHoldings = book.fundHoldings;   // 现金条目已剔除
+  const cash = book.deployable;
   const t1Info = getSettlementTimeline('fund', new Date());
 
   // 现金预算账本: 加仓/买入统一从这里出账, 保证建议买入总额不超过可用现金。
   //   (历史 bug: 每只持仓各自用 cash 判断"够不够", 多只同时触发加仓时会重复花同一笔钱)
-  let remainingCash = Math.max(0, cash);
+  let remainingCash = cash;
   function spend(want) {
     const amount = Math.min(Math.round(want), Math.round(remainingCash));
     if (amount < 10) return 0; // 太小不值得下单
@@ -134,12 +165,13 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     });
   }
 
-  // 按融合信号排序
-  rankedFunds.sort((a, b) => {
-    const aScore = a.fusedSignal.prediction * 100 + a.fusedSignal.confidence * 50 + (a.score || 0) * 0.3;
-    const bScore = b.fusedSignal.prediction * 100 + b.fusedSignal.confidence * 50 + (b.score || 0) * 0.3;
-    return bScore - aScore;
-  });
+  // 按风险调整后预期收益排序
+  //   原公式 prediction*100 + confidence*50 + score*0.3: prediction 实际只有
+  //   0.005~0.03(→0.5~3分), 而 confidence 0.15~0.95(→7.5~47分) 完全主导,
+  //   等于在按"哪个模型最自信"排序, 而不是"哪个预期涨得多"。
+  //   实测: 预期+0.5%但置信0.95 会排在 预期+3%但置信0.7 前面。
+  //   现改为 预期涨幅 × 置信 × 波动惩罚, 并放大到能压过技术评分。
+  rankedFunds.sort((a, b) => rankScore(b) - rankScore(a));
 
   // ============================================================
   // 2. 生成操作指令
@@ -174,15 +206,22 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     const fundData = rankedFunds.find(f => f.code === holding.code);
     const signal = fundData?.fusedSignal;
     const currentPrice = fundData?.price || fundData?.nav || holding.buyPrice || 0;
-    // shares ≤ 0 说明份额缺失(如 V5/V6 路径建仓时拿不到净值)。此时
-    //   shares*现价 = 0 → 盈亏率算成 -100%, 会直接误触发硬止损。
-    //   算不出来就不按盈亏决策, 交由下面的信号/体制分支处理。
-    const profitPct = holding.costBasis > 0 && currentPrice > 0 && holding.shares > 0
-      ? (holding.shares * currentPrice - holding.costBasis) / holding.costBasis
-      : 0;
+
+    // ★ 盈亏率: 带 fallback 链, 不再因为份额缺失把真实浮亏抹平成 0
+    //   实测 019018 浮亏 -13.97%(currentValue 399.73 / costBasis 464.64),
+    //   早击穿 -8% 硬止损, 却因 shares 口径失效一直挂在"持有"里, 止损形同虚设。
+    const pnl = profitRatioDetailed(holding, currentPrice);
+    const profitPct = pnl.ratio;
+    // 兜底口径算出来的盈亏用于止损判断时, 要让用户知道这不是精算值
+    const pnlImprecise = pnl.source === 'marketValue' || pnl.source === 'recorded';
+
     const holdingDays = holding.buyDate
       ? Math.floor((Date.now() - new Date(holding.buyDate).getTime()) / 86400000)
       : 30;
+
+    // ★ 波动率自适应止损: 芯片基金日常震荡就能打穿固定 -8% 被扫出局,
+    //   沪深300 用 -8% 又太松。按年化波动缩放, 限幅 [-15%, -4%]。
+    const stopLossLine = adaptiveStopLoss(fundData?.deepHistory || fundData?.history, RISK_CONFIG.stopLossRatio);
 
     // ★ V4.1: 计算最高价 (从持仓记录或历史数据)
     const peakPrice = holding.peakPrice || Math.max(currentPrice, holding.buyPrice || currentPrice);
@@ -193,16 +232,17 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
       ? (currentPrice - peakPrice) / peakPrice
       : 0;
 
-    // 止损 (不变)
-    if (profitPct <= RISK_CONFIG.stopLossRatio) {
+    // 止损: 波动率自适应线。兜底口径算出的盈亏会额外标注, 便于人工复核
+    if (profitPct <= stopLossLine) {
       const sellPrice = currentPrice;
+      const lineTag = `${(stopLossLine * 100).toFixed(1)}%${Math.abs(stopLossLine - RISK_CONFIG.stopLossRatio) > 0.001 ? '(波动率自适应)' : ''}`;
       operations.sells.push({
         action: 'SELL',
         code: holding.code,
         name: holding.name,
         shares: holding.shares,
-        amount: holding.shares * sellPrice,
-        reason: `止损(${(profitPct * 100).toFixed(1)}%)`,
+        amount: holding.shares > 0 ? holding.shares * sellPrice : num(holding.currentValue),
+        reason: `止损(${(profitPct * 100).toFixed(1)}% ≤ ${lineTag})${pnlImprecise ? '·盈亏按市值口径估算' : ''}`,
         t1: t1ForHolding,
         urgency: 'HIGH',
       });
@@ -335,15 +375,39 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
       continue;
     }
 
-    // 加仓: 信号强且(恐慌时小亏即可 / 平时需达阈值)
-    const addThreshold = isFear ? 0 : RISK_CONFIG.addPositionThreshold;
+    // ★ 加仓: 顺势加仓(信号强且确实在赚), 不再是"越跌越买"
+    //
+    //   原逻辑 profitPct < -0.05 是无下界的逆向摊平: 在 -5%~-8% 区间反复补仓,
+    //   补完 profitPct 回到浅亏反而绕过止损, 继续跌继续补, 直到跌破止损线
+    //   一次性全割, 且新份额持有<7天要多付 1.5% 赎回费。
+    //
+    //   新逻辑的四道闸门:
+    //   1. 盈亏下界: 深亏说明"信号看多"与"市场在跌"矛盾 = 判断错了, 让止损工作
+    //   2. 止损缓冲: 距止损线不足 2% 不加, 否则加了很可能立刻被扫出
+    //   3. 费率保护: 持有<7天不加, 新份额一旦被止损要付 C类 1.5% 赎回费
+    //   4. 单只上限: 加完之后该基金总市值不得超过 maxSinglePosition
+    const addFloor = isFear ? RISK_CONFIG.addPositionMinPctFear
+                            : RISK_CONFIG.addPositionMinPct;
+    const distanceToStop = profitPct - stopLossLine;
+    const feeSafe = holdingDays >= RISK_CONFIG.addPositionFeeSafeDays;
+    const currentPosValue = book.valueOf(holding.code);
+    const positionRoom = Math.max(0, BUDGET * RISK_CONFIG.maxSinglePosition - currentPosValue);
+
     if (signal && (signal.signal === 'STRONG_BUY' || signal.signal === 'BUY')
-        && profitPct < addThreshold
-        && cash > (isFear ? 300 : 500)
+        && profitPct >= addFloor
+        && distanceToStop >= RISK_CONFIG.addPositionStopBuffer
+        && feeSafe
+        && positionRoom > 0
+        && remainingCash > (isFear ? 300 : 500)
         // 净值停止更新的持仓不加仓: 现价未知, 加仓金额无从折算
         && isFreshEnoughToTrade(fundData)) {
       const addPrice = currentPrice || 1;
-      const addAmount = spend(Math.min(remainingCash * RISK_CONFIG.addPositionMaxPct, isFear ? 1500 : 2000));
+      // 三重取小: 现金比例上限 / 该基金剩余额度 / 单次绝对上限
+      const addAmount = spend(Math.min(
+        remainingCash * RISK_CONFIG.addPositionMaxPct,
+        positionRoom,
+        isFear ? 1500 : 2000,
+      ));
       if (addAmount > 0) {
         operations.addPositions.push({
           action: 'ADD_POSITION',
@@ -354,7 +418,7 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
           //   缺了会算出 NaN 写进 holdings.json
           price: addPrice,
           shares: Math.floor(addAmount / addPrice),
-          reason: `跌${(Math.abs(profitPct) * 100).toFixed(1)}%+ML看多${isFear ? `·市场${sentimentLabel}逆向小加仓` : ''}`,
+          reason: `顺势加仓(${signal.signal}, 盈亏${(profitPct * 100).toFixed(1)}%)${isFear ? `·市场${sentimentLabel}逆向` : ''}`,
           t1: t1ForHolding,
           urgency: 'MEDIUM',
         });
@@ -386,11 +450,33 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
   const maxPositions = RISK_CONFIG.maxTotalPositions - fundHoldings.length + operations.sells.length;
   let buyCount = 0;
 
+  // 止损卖出冷却表: 只读一次, 避免每个候选都去读文件
+  const recentSells = loadRecentSells();
+
+  // ★ 赛道额度台账: 本轮已决定投入各赛道的金额, 与既有持仓合并后校验上限。
+  //   没有它的话, 同一个赛道的 3 只芯片基金会被逐个放行, 各自都没超单只上限,
+  //   合起来却把 40%+ 的预算压在同一个赛道上。
+  const sectorSpend = new Map();
+  /** 某赛道本轮+既有的合计投入 */
+  function sectorUsed(sector) {
+    if (!sector) return 0;
+    return sectorExposure(fundHoldings, sector) + num(sectorSpend.get(sector));
+  }
+  /** 成长类赛道本轮+既有的合计投入 */
+  function growthUsed() {
+    let sum = 0;
+    for (const s of GROWTH_SECTORS) sum += sectorUsed(s);
+    return sum;
+  }
+
   for (const fund of rankedFunds) {
     if (buyBudget < 100 || buyCount >= maxPositions) break;
 
     // 跳过已持有的
     if (fundHoldings.find(h => h.code === fund.code)) continue;
+
+    // ★ 冷却期: 刚被止损扫出的不马上买回来(防来回打脸)。只挡买入, 不挡其他操作。
+    if (inSellCooldown(fund.code, RISK_CONFIG.sellCooldownDays, recentSells)) continue;
 
     // 跳过净值已停止更新的: 现价未知, 且可能已停牌/清盘, 买入指令无法成交
     if (!isFreshEnoughToTrade(fund)) continue;
@@ -415,32 +501,53 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     // 置信度调整 (保底50%仓位)
     kellyFraction *= Math.max(0.5, signal.confidence);
 
+    // ★ 波动率倒数加权: 同样的信号强度, 高波动品种给更小的仓位。
+    //   否则组合会系统性超配芯片这类高波动基金, 收益没多拿回撤先翻倍。
+    kellyFraction *= volPositionScale(fund.history || fund.deepHistory);
+
     // 单只上限
     kellyFraction = Math.min(kellyFraction, RISK_CONFIG.maxSinglePosition);
 
     const buyAmount = Math.min(buyBudget * kellyFraction, buyBudget, BUDGET * RISK_CONFIG.maxSinglePosition);
-    if (buyAmount < 10) continue;
+
+    // ★ 赛道额度闸门: 单只没超限不代表组合没超限
+    //   单赛道 ≤ maxSingleSector (防止 aiChip 3 只堆到 60%)
+    //   成长类合计 ≤ maxTechConcentration (用户既定的全赛道偏好上限)
+    const sector = sectorOf(fund.code);
+    let allowed = buyAmount;
+    if (sector) {
+      const sectorRoom = BUDGET * RISK_CONFIG.maxSingleSector - sectorUsed(sector);
+      allowed = Math.min(allowed, sectorRoom);
+    }
+    if (sector && GROWTH_SECTORS.has(sector)) {
+      const growthRoom = BUDGET * RISK_CONFIG.maxTechConcentration - growthUsed();
+      allowed = Math.min(allowed, growthRoom);
+    }
+    if (allowed < 10) continue;   // 该赛道额度用尽, 换下一只
 
     const price = fund.price || fund.nav || 0;
-    const shares = price > 0 ? Math.floor(buyAmount / price) : 0;
+    const shares = price > 0 ? Math.floor(allowed / price) : 0;
+
+    if (sector) sectorSpend.set(sector, num(sectorSpend.get(sector)) + allowed);
 
     operations.buys.push({
       action: 'BUY',
       code: fund.code,
       name: fund.name,
-      amount: buyAmount,
+      amount: allowed,
       shares,
       price,
+      sector,
       score: fund.score || 0,
       mlSignal: signal.signal,
       confidence: signal.confidence,
       prediction: signal.prediction,
-      reason: `${signal.signal} 置信${(signal.confidence * 100).toFixed(0)}% 预测${(signal.prediction * 100).toFixed(2)}%`,
+      reason: `${signal.signal} 置信${(signal.confidence * 100).toFixed(0)}% 预测${(signal.prediction * 100).toFixed(2)}%${sector ? `·${sector}` : ''}`,
       t1: t1Info,
       urgency: signal.signal === 'STRONG_BUY' ? 'HIGH' : 'MEDIUM',
     });
 
-    buyBudget -= buyAmount;
+    buyBudget -= allowed;
     buyCount++;
   }
 

@@ -9,8 +9,14 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
+// ★ 冷却期记录会写文件, 必须在 require advisor_v4 之前把路径指到临时目录,
+//   否则会把测试数据写进用户真实的 data/recent_sells.json
+process.env.RECENT_SELLS_FILE = path.join(
+  require('os').tmpdir(), `recent_sells_v4_${process.pid}.json`);
+
 const { generateAdviceV4 } = require('../src/advisor_v4');
 const { BUDGET, RISK_CONFIG } = require('../src/config');
+const { recordStopLossSells } = require('../src/portfolio_book');
 
 let pass = 0;
 function ok(name, cond) { assert.ok(cond, '❌ ' + name); console.log('  ✅ ' + name); pass++; }
@@ -40,18 +46,36 @@ function dateSeries(n, end = new Date()) {
   });
 }
 
+// 备份表: 种子文件若是覆盖用户已存在的真实缓存, 跑完必须还原。
+//   (教训: 曾用真实基金代码 008282/017470/014419 做赛道集中度测试,
+//    seedCache 覆盖后 cleanupCache 直接删, 把用户 3 个真实净值缓存删掉了)
+// 注意: 同一轮里同一只可能被播种多次(如 P1 连跑三次), 只有**首次**存在才算
+//   "用户原有缓存"。第二次再备份就变成备份我们自己写的东西, 还原后反而留下垃圾。
 const SEEDED = new Set();
+const SEEDED_BACKUP = new Map();
+
 function seedCache(code, navs) {
   if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+  const file = path.join(CACHE_DIR, `${code}.json`);
+  const existed = fs.existsSync(file);
+  if (existed && !SEEDED.has(code) && !SEEDED_BACKUP.has(code)) {
+    SEEDED_BACKUP.set(code, fs.readFileSync(file));   // 原样保留字节
+  }
   const history = navs.map((nav, i) => ({ date: dateSeries(navs.length)[i], nav }));
-  fs.writeFileSync(path.join(CACHE_DIR, `${code}.json`),
-    JSON.stringify({ code, history, lastUpdate: new Date().toISOString() }));
+  fs.writeFileSync(file, JSON.stringify({ code, history, lastUpdate: new Date().toISOString() }));
   SEEDED.add(code);
 }
+
 function cleanupCache() {
   for (const code of SEEDED) {
-    try { fs.unlinkSync(path.join(CACHE_DIR, `${code}.json`)); } catch (e) { /* 已删 */ }
+    const file = path.join(CACHE_DIR, `${code}.json`);
+    try {
+      if (SEEDED_BACKUP.has(code)) fs.writeFileSync(file, SEEDED_BACKUP.get(code)); // 还原真实缓存
+      else fs.unlinkSync(file);                                                    // 只删自己造的
+    } catch (e) { /* 忽略 */ }
   }
+  SEEDED.clear();
+  SEEDED_BACKUP.clear();
 }
 
 const UP = Array.from({ length: 40 }, (_, i) => 1 + i * 0.01);       // → STRONG_BUY
@@ -133,10 +157,11 @@ const spendOf = (r) => moneyOps(r).reduce((s, o) => s + (o.amount || 0), 0);
   // -------------------------------------------------------------
   console.log('\n【3. 现金预算: 不得推荐超出可用现金的买入】');
   // 3.1 多只同时触发加仓 —— 修复前每只各按原始 cash 判断, 会重复花同一笔钱。
-  //     每只加仓额 = min(cash*20%, 2000); 6 只同时触发 → 需求 120% 现金, 必然超发。
-  //     profitPct 取 -6%: 落在加仓区间(-5%以下)但不触硬止损(-8%)。
+  //     每只加仓额 = min(cash*20%, 单只剩余额度, 2000); 6 只同时触发 → 需求 120% 现金。
+  //     profitPct 取 0(顺势加仓区间): 加仓已改为"信号强且确实没亏"才加,
+  //     不再是越跌越买, 所以这里不能用亏损仓位触发。
   const cost = Math.round((BUDGET - 1500) / 6);
-  const shares = Math.round(cost * 0.94); // → profitPct ≈ -6%
+  const shares = cost; // → profitPct = 0, 落在顺势加仓区间(下界 -3%)
   const funds3 = [], holds3 = [];
   for (let i = 1; i <= 6; i++) {
     funds3.push(mkFund('C' + i, UP, 1.0));
@@ -249,6 +274,126 @@ const spendOf = (r) => moneyOps(r).reduce((s, o) => s + (o.amount || 0), 0);
     ok(`持仓 ${code} 有明确操作`, allOps(rCov).some(o => o.code === code));
   }
 
+  // -------------------------------------------------------------
+  console.log('\n【6. 加仓闸门: 不再是越跌越买】');
+  // 老逻辑 profitPct < -0.05 即加(无下界): 在 -5%~-8% 反复摊平, 摊完 profitPct
+  // 回到浅亏反而绕过止损, 继续跌继续补, 直到跌破止损一次性全割 —— 马丁格尔。
+  // 新逻辑: 信号看多但价格深亏 = 信号与市场矛盾, 说明判断错了, 让止损工作。
+
+  // 6.1 深亏不加仓
+  r = await run([mkFund('K1', UP, 1.0)],
+    [mkHolding('K1', 930, 1.0, 1000)]);   // profitPct = -7%
+  ok(`亏7%不加仓 (下界 ${RISK_CONFIG.addPositionMinPct})`,
+    !r.operations.addPositions.some(o => o.code === 'K1'));
+
+  // 6.2 浅亏/不亏才加仓 (顺势)
+  r = await run([mkFund('K2', UP, 1.0)],
+    [mkHolding('K2', 990, 1.0, 1000)]);   // profitPct = -1%, 在下界之内
+  ok('亏1%(下界内)可加仓', r.operations.addPositions.some(o => o.code === 'K2'));
+
+  // 6.3 C类赎回费保护: 持有 <7 天不加仓
+  //     新份额一旦被止损扫出要付 1.5% 赎回费, 等于把 -8% 止损扩大到 -9.5%
+  r = await run([mkFund('K3', UP, 1.0)],
+    [mkHolding('K3', 1000, 1.0, 1000, {
+      buyDate: new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10),
+    })]);
+  ok('持有3天<7天不加仓(C类赎回费保护)',
+    !r.operations.addPositions.some(o => o.code === 'K3'));
+
+  // 6.4 单只总仓位上限: 已到 20% 上限的不得再加
+  const cap20 = Math.round(BUDGET * RISK_CONFIG.maxSinglePosition);
+  r = await run([mkFund('K4', UP, 1.0)],
+    [mkHolding('K4', 1000, 1.0, 1000, { currentValue: cap20 })]);
+  ok(`单只已达上限 ¥${cap20} 不加仓`,
+    !r.operations.addPositions.some(o => o.code === 'K4'));
+
+  // 6.5 加仓后不得突破单只上限 (部分仓位 → 只加到上限为止)
+  const halfCap = Math.round(cap20 * 0.5);
+  r = await run([mkFund('K5', UP, 1.0)],
+    [mkHolding('K5', 1000, 1.0, 1000, { currentValue: halfCap })]);
+  const addK5 = r.operations.addPositions.find(o => o.code === 'K5');
+  ok(`半仓(¥${halfCap})可加仓`, !!addK5);
+  if (addK5) {
+    ok(`加仓额 ¥${Math.round(addK5.amount)} ≤ 剩余额度 ¥${cap20 - halfCap}`,
+      addK5.amount <= cap20 - halfCap + 1);
+  }
+
+  // -------------------------------------------------------------
+  console.log('\n【7. 盈亏率 fallback: 份额缺失也得算得出浮亏】');
+  // 修复前只有 shares×现价 一条路, shares 缺失时 profitPct 直接记 0,
+  //   把真实浮亏抹平 → 击穿 -8% 硬止损却挂在"持有"里, 止损形同虚设。
+  //   实测 019018 浮亏 -13.97%(currentValue 399.73/costBasis 464.64) 就是这样被漏掉的。
+  r = await run([mkFund('M1', FLAT, 1.0)],
+    [mkHolding('M1', 0, 1.0, 1000, { currentValue: 920 })]);  // shares=0, 市值口径 -8%
+  const m1 = r.operations.sells.find(o => o.code === 'M1');
+  ok('份额缺失时用市值口径仍能触发止损', !!m1);
+  ok('止损原因标注了估算口径', !!m1 && m1.reason.includes('市值口径估算'));
+  ok('止损金额按市值兜底(非 0×现价=0)', !!m1 && m1.amount > 0);
+
+  // 份额与现价都在时走最准的 shares 口径 (shares×现价 = 920, costBasis = 1000 → -8%)
+  r = await run([mkFund('M2', FLAT, 1.0)], [mkHolding('M2', 920, 1.0, 1000)]);
+  const m2 = r.operations.sells.find(o => o.code === 'M2');
+  ok('份额口径正常触发止损', !!m2);
+  ok('份额口径不标注估算(是精算值)', !!m2 && !m2.reason.includes('市值口径估算'));
+
+  // 不亏则不卖: 排除"改成一律卖出"的假阳性
+  r = await run([mkFund('M3', FLAT, 1.0)], [mkHolding('M3', 1000, 1.0, 1000)]);
+  ok('持平不触发止损', !r.operations.sells.some(o => o.code === 'M3'));
+
+  // -------------------------------------------------------------
+  console.log('\n【8. 现金账本: 现金条目不再把可用现金算成负数】');
+  // 修复前 cash = BUDGET - ΣcostBasis, 把余额宝的 costBasis 也算成"已投基金成本"。
+  //   实盘 ΣcostBasis=6298.28 > BUDGET=5500 → cash=-798 → 归零 → 买入循环
+  //   buyBudget<100 直接 break, 引擎从不产出买入指令。
+  const realLike = [
+    { code: 'CASH_YEB', name: '余额宝(现金)', type: 'cash',
+      shares: 2269, buyPrice: 1, costBasis: 3269.26, currentValue: 2269.26,
+      buyDate: new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10) },
+    mkHolding('N1', 1000, 1.0, 1000, { currentValue: 1511.25 }),
+    mkHolding('N2', 1000, 1.0, 1000, { currentValue: 399.73 }),
+    mkHolding('N3', 1000, 1.0, 1000, { currentValue: 1000 }),
+  ];
+  const oldCash = BUDGET - realLike.reduce((s, h) => s + h.costBasis, 0);
+  ok(`修复前口径确实为负 (¥${oldCash.toFixed(0)})`, oldCash < 0);
+  r = await run([mkFund('N9', UP, 1.0)], realLike);
+  const spendReal = spendOf(r);
+  ok(`修复后仍能产出买入/加仓指令 (¥${Math.round(spendReal)})`, spendReal > 0);
+  ok(`且不超过手头现金 ¥2269.26`, spendReal <= 2269.26 + 1);
+
+  // -------------------------------------------------------------
+  console.log('\n【9. 赛道集中度: 单只没超限 ≠ 组合没超限】');
+  // WATCHLIST 里 aiChip 有 3 只芯片基金, 各自单只上限 20%(=¥1100),
+  //   逐个放行会堆到 ¥3300 = 预算 60%, 名义分散实际是单一赛道重仓。
+  const CHIP = ['008282', '017470', '014419'];
+  r = await run(CHIP.map(c => mkFund(c, UP, 1.0)), []);
+  const chipSpend = r.operations.buys
+    .filter(o => CHIP.includes(o.code))
+    .reduce((s, o) => s + o.amount, 0);
+  const sectorCap = BUDGET * RISK_CONFIG.maxSingleSector;
+  ok(`买了芯片基金 (¥${Math.round(chipSpend)})`, chipSpend > 0);
+  ok(`同赛道合计 ¥${Math.round(chipSpend)} ≤ 单赛道上限 ¥${Math.round(sectorCap)}`,
+    chipSpend <= sectorCap + 1);
+
+  // 9.2 止损冷却期: 刚被止损扫出的不得马上买回来
+  //     冷却表是跨运行的状态, 持仓文件里不留卖出记录, 所以单独存一份。
+  try { fs.unlinkSync(process.env.RECENT_SELLS_FILE); } catch (e) {}
+  r = await run([mkFund('P1', UP, 1.0)], []);
+  ok('冷却前 P1 可买入', r.operations.buys.some(o => o.code === 'P1'));
+  recordStopLossSells(['P1']);           // 模拟上一轮刚被止损
+  r = await run([mkFund('P1', UP, 1.0)], []);
+  ok(`止损后 ${RISK_CONFIG.sellCooldownDays} 天内不再买回 P1`,
+    !r.operations.buys.some(o => o.code === 'P1'));
+  // 只挡这一只, 不株连其他基金
+  r = await run([mkFund('P1', UP, 1.0), mkFund('P2', UP, 1.0)], []);
+  ok('冷却只挡被止损的那只, 不株连其他', r.operations.buys.some(o => o.code === 'P2'));
+  try { fs.unlinkSync(process.env.RECENT_SELLS_FILE); } catch (e) {}
+
   cleanupCache();
+  // 自检: 播种的缓存必须全部清干净, 且不得留下任何非 6 位代码的文件
+  //   (曾因"同一轮重复播种被误判为原有缓存"而还原出垃圾文件 P1.json)
+  const leftovers = fs.readdirSync(CACHE_DIR).filter(f => !/^\d{6}\.json$/.test(f));
+  eq('跑完不留任何测试缓存文件', leftovers.length, 0);
+  if (leftovers.length > 0) console.log('    残留:', leftovers.slice(0, 10).join(', '));
+
   console.log(`\n✅ V4 决策引擎单测全部通过 (${pass} 项)`);
 })().catch(e => { cleanupCache(); console.error('\n❌ 测试异常:', e); process.exit(1); });

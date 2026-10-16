@@ -76,6 +76,10 @@ const RISK_CONFIG = {
   cashReserve: 0.15,            // 保留15%现金作为机动
   minHoldingDays: 3,            // 最短持有期(避开C类<7天1.5%赎回费)
   maxTechConcentration: 0.75,   // 科技(成长赛道)集中度上限; 用户偏好全赛道(赚钱优先), 放宽到75%; QDII广发不算入
+  // 单赛道上限: 定义maxTechConcentration时只管了"科技类合计", 没管单个赛道。
+  //   WATCHLIST 里 aiChip 有 3 只芯片基金, 各自单只上限 20% → 同一赛道可堆到 60%,
+  //   名义分散实际是单一赛道重仓, 芯片一跌全组合一起跌。
+  maxSingleSector: 0.40,        // 单个赛道占预算上限 40%
 
   // 移动止盈
   takeProfitCeiling: 0.50,
@@ -92,8 +96,19 @@ const RISK_CONFIG = {
   maxHoldingDaysBear: 15,       // 熊市缩短到15天
 
   // 加仓参数
-  addPositionThreshold: -0.05,    // 跌5%触发加仓评估
-  addPositionMaxPct: 0.20,        // 加仓最多20%可用现金
+  // ★ 策略修正: 原为无下界的"越跌越买"(profitPct < -0.05 即加)。
+  //   在 -5%~-8% 区间每天摊一次成本, 摊完 profitPct 回到 -3% 反而绕过止损,
+  //   继续跌继续加, 直到跌破止损线一次性全割 —— 典型马丁格尔, 且新份额
+  //   持有<7天要多付 1.5% 赎回费, 实际止损成本被扩大到 -9.5%。
+  //   现改为顺势加仓: 信号看多但价格在深亏 = 信号与市场矛盾, 说明判断错了,
+  //   此时应让止损工作, 而不是加码摊平。
+  addPositionMinPct: -0.03,       // 平时: 亏超 3% 不加仓(信号与市场矛盾)
+  addPositionMinPctFear: -0.05,   // 恐慌时放宽到 -5% (逆向布局, 承认错杀)
+  addPositionMaxPct: 0.20,        // 单次加仓最多占可用现金 20%
+  addPositionStopBuffer: 0.02,    // 距止损线不足 2% 不加仓(加了很可能立刻被扫出)
+  addPositionFeeSafeDays: 7,      // C类<7天赎回费1.5%, 未过门槛不加仓
+  // 止损卖出冷却期: 刚被止损扫出, 隔天信号一翻又买回来, 来回收割是动量策略的经典死法
+  sellCooldownDays: 5,            // 止损卖出后 5 个自然日内不再买入同一只
 
   // 终极版新增: 大类资产配置目标
   strategicAllocation: {

@@ -72,6 +72,9 @@ jobs:
       - name: V4 默认引擎属性测试 (60组随机组合 × 8项不变量)
         run: node --trace-warnings test/decision_fuzz_v4.test.js 2>&1 | tee /tmp/fuzz_v4.log
 
+      - name: 组合账本单测 (现金口径 / 盈亏 fallback / 自适应止损 / 赛道敞口)
+        run: node --trace-warnings test/portfolio_book.test.js 2>&1 | tee /tmp/book.log
+
       - name: 数据新鲜度单测 (按交易日计龄 / 三档判定 / 决策侧排除)
         run: node --trace-warnings test/data_freshness.test.js 2>&1 | tee /tmp/freshness.log
 
@@ -133,6 +136,7 @@ jobs:
             echo "===== repro.log ====="; cat /tmp/repro.log 2>/dev/null || echo "(无 repro.log)"
             echo "===== fuzz.log ====="; cat /tmp/fuzz.log 2>/dev/null || echo "(无 fuzz.log)"
             echo "===== fuzz_v4.log ====="; cat /tmp/fuzz_v4.log 2>/dev/null || echo "(无 fuzz_v4.log)"
+            echo "===== book.log ====="; cat /tmp/book.log 2>/dev/null || echo "(无 book.log)"
             echo "===== freshness.log ====="; cat /tmp/freshness.log 2>/dev/null || echo "(无 freshness.log)"
             echo "===== apply_v5.log ====="; cat /tmp/apply_v5.log 2>/dev/null || echo "(无 apply_v5.log)"
             echo '```'
