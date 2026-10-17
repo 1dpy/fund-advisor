@@ -13,7 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const { fetchFundHistory } = require('./fetcher');
-const { PREFERRED_SECTORS } = require('./config');
+const { PREFERRED_SECTORS, ML_CONFIG } = require('./config');
 const { predictWithLSTM } = require('./quant/lstm_lite');
 const { predictWithLSTMAttention } = require('./quant/lstm_attention'); // ProMax: 双层LSTM+多头注意力+dropout+L2
 const { ensembleVote } = require('./quant/ensemble');
@@ -73,9 +73,19 @@ function scoreFund(navs, modelType = 'fused') {
   const history = navs.map((n) => ({ nav: (typeof n === 'number' ? n : n.nav) }));
 
   let lite = null, attn = null, ens = null;
-  if (modelType === 'lite' || modelType === 'fused') { try { lite = withSeed(42, () => predictWithLSTM(closes, 3)); } catch (e) { /* skip */ } }
-  if (modelType === 'attention' || modelType === 'fused') { try { attn = withSeed(43, () => predictWithLSTMAttention(history, 20, 5)); } catch (e) { /* skip */ } }
-  try { ens = ensembleVote(closes); } catch (e) { /* skip */ }
+  // ML_CONFIG 此前定义了 12 个 enable* 开关却从没被接上 —— 改配置完全无效,
+  //   想关掉某个慢模型/不信任的模型做不到。现在真正生效, 默认全 true 与旧行为一致。
+  const ML = ML_CONFIG || {};
+  const want = (flag) => flag !== false;   // 缺失/非 false 都视为开启, 向后兼容
+  if (want(ML.enableLSTM) && (modelType === 'lite' || modelType === 'fused')) {
+    try { lite = withSeed(42, () => predictWithLSTM(closes, 3)); } catch (e) { /* skip */ }
+  }
+  if (want(ML.enableLSTMAttention) && (modelType === 'attention' || modelType === 'fused')) {
+    try { attn = withSeed(43, () => predictWithLSTMAttention(history, 20, 5)); } catch (e) { /* skip */ }
+  }
+  if (want(ML.enableEnsemble)) {
+    try { ens = ensembleVote(closes); } catch (e) { /* skip */ }
+  }
 
   const dirVal = (d) => (d === 'UP' ? 1 : d === 'DOWN' ? -1 : 0);
   const liteScore = lite ? dirVal(lite.direction) * (lite.confidence / 100) : 0;
@@ -83,10 +93,21 @@ function scoreFund(navs, modelType = 'fused') {
   const ensScore = ens ? ens.signal : 0; // -1 ~ 1
 
   // 综合分: fused 时 attention为主(promax), lite/ensemble辅助
-  let mlScore;
-  if (modelType === 'lite') mlScore = liteScore * 0.6 + ensScore * 0.4;
-  else if (modelType === 'attention') mlScore = attnScore * 0.6 + ensScore * 0.4;
-  else mlScore = attnScore * 0.4 + liteScore * 0.2 + ensScore * 0.4; // fused
+  //   ★ 按**实际跑起来的模型**重新归一化权重。关掉一个模型若只是让它贡献 0
+  //   而权重还留在分母外, 综合分会被系统性压低 —— 关掉 LSTM 会让所有基金
+  //   的 mlScore 变小, 信号莫名从 BUY 掉到 HOLD, 等于开关改变了策略语义。
+  //   归一化后分数仍是加权平均, 量纲不变, 关模型只影响"参考了哪些信息"。
+  const W = modelType === 'lite' ? { lite: 0.6, ens: 0.4 }
+    : modelType === 'attention' ? { attn: 0.6, ens: 0.4 }
+      : { attn: 0.4, lite: 0.2, ens: 0.4 };
+  const scores = { lite: lite ? liteScore : null, attn: attn ? attnScore : null, ens: ens ? ensScore : null };
+  let wSum = 0; let sSum = 0;
+  for (const k of Object.keys(W)) {
+    if (scores[k] == null) continue;
+    wSum += W[k];
+    sSum += scores[k] * W[k];
+  }
+  let mlScore = wSum > 0 ? sSum / wSum : 0;
 
   // 预测收益微调(±0.3): 优先 attention(小数*100转%), 否则 lite(已是%)
   let predPct = null;

@@ -38,6 +38,7 @@ const { optimizeParameters } = require('./src/quant/bayesian');
 const { predictAllNavChanges, getSettlementInfo } = require('./src/nav_predictor');
 const { fetchUSImpactV2 } = require('./src/us_market_v2');
 const { runMLEnsemble } = require('./src/quant/ml_ensemble');
+const { ML_CONFIG } = require('./src/config');
 const { analyzeFundHoldings } = require('./src/holdings_analyzer');
 const { getSettlementTimeline } = require('./src/t1_calendar');
 const { printUltimateAdvice, formatDingtalkUltimate, printAggressiveAdvice, formatDingtalkAggressive, printFreshnessWarnings } = require('./src/advice_presenter');
@@ -354,7 +355,8 @@ async function main() {
     let anomalyAlerts = [];
     try {
       const features = extractFeatures(allData.indexes, 45);
-      if (features && features.length >= 30) {
+      // enableHMM 此前是死配置; 缺失/非 false 都视为开启, 向后兼容
+      if (features && features.length >= 30 && ML_CONFIG.enableHMM !== false) {
         hmmResult = trainHMMPro(features, 4, 30);
         if (!quiet && hmmResult) console.log('🔮 HMM Pro:', hmmResult.currentState, `(${hmmResult.confidence}%)`, hmmResult.warning || '');
       }
