@@ -25,7 +25,7 @@ const { resample, hurstExponent, getCachedHistory } = require('./data_collector'
 const { getSettlementTimeline } = require('./t1_calendar');
 const {
   buildBook, profitRatio, profitRatioDetailed, annualizedVol, volPositionScale,
-  adaptiveStopLoss, sectorOf, sectorExposure, clamp, num,
+  adaptiveStopLoss, peakSince, sectorOf, sectorExposure, clamp, num,
   loadRecentSells, inSellCooldown,
 } = require('./portfolio_book');
 const { assessFreshness } = require('./data_freshness');
@@ -223,11 +223,28 @@ async function generateAdviceV4(data, holdings, mlEnsemble, usImpact, marketRegi
     //   沪深300 用 -8% 又太松。按年化波动缩放, 限幅 [-15%, -4%]。
     const stopLossLine = adaptiveStopLoss(fundData?.deepHistory || fundData?.history, RISK_CONFIG.stopLossRatio);
 
-    // ★ V4.1: 计算最高价 (从持仓记录或历史数据)
-    const peakPrice = holding.peakPrice || Math.max(currentPrice, holding.buyPrice || currentPrice);
-    const peakProfitPct = holding.costBasis > 0 && peakPrice > 0
-      ? (holding.shares * peakPrice - holding.costBasis) / holding.costBasis
-      : 0;
+    // ★ V4.1: 计算最高价。
+    //   holding.peakPrice 全项目从未写入过, 只看它会让移动止盈恒不触发
+    //   (推导: 现价≥买价→peak=现价→回撤0; 现价<买价→peakProfit≈0→激活不了)。
+    //   改为从持仓期内历史净值取真实峰值; 持有期峰值不得低于现价与买入价。
+    const histPeak = peakSince(
+      fundData?.deepHistory || fundData?.history,
+      holding.buyDate,
+      holding.buyPrice || currentPrice,
+    );
+    const peakPrice = Math.max(
+      num(holding.peakPrice), histPeak, currentPrice, num(holding.buyPrice),
+    );
+    // 注意: 不能复用 profitRatioDetailed —— 它第二级 fallback 是
+    //   currentValue/costBasis, 那是"当前盈亏"不是"峰值盈亏",
+    //   拿它跟 15% 激活线比会误判(永远等于当前盈亏率)。
+    const peakProfitPct = (() => {
+      if (num(holding.costBasis) > 0 && num(holding.shares) > 0 && peakPrice > 0) {
+        return (num(holding.shares) * peakPrice - num(holding.costBasis)) / num(holding.costBasis);
+      }
+      const bp = num(holding.buyPrice);      // 份额缺失: 退回价格口径
+      return bp > 0 && peakPrice > 0 ? peakPrice / bp - 1 : 0;
+    })();
     const drawdownFromPeak = peakPrice > 0 && currentPrice > 0
       ? (currentPrice - peakPrice) / peakPrice
       : 0;

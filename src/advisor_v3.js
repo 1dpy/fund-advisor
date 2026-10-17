@@ -992,10 +992,17 @@ function applyDecisions(decisions) {
       // 摊薄后的买入均价 (份额>0 才有意义)
       cur.buyPrice = totalShares > 0 ? Math.round((totalCost / totalShares) * 10000) / 10000 : cur.buyPrice;
       cur.buyDate = new Date().toISOString().split('T')[0]; // 重算持有期, 免得刚加仓就被短费率挡住
+      // 加仓摊薄了成本基准, 旧峰值对应的盈亏率不再可比 → 峰值从成交价重新起算
+      //   (顺势加仓时峰值≥现价, 重置会略微压低峰值 = 更不容易触发止盈, 方向是保守的)
+      cur.peakPrice = p;
       continue;
     }
     newHoldings.push(mkHolding(order.code, order.name, amount, p, order.type));
   }
+
+  // 存量持仓补 peakPrice 基线: 老持仓文件里没有这个字段, 用买入价起步,
+  //   之后每轮 V4 会用持仓期内的历史净值算真实峰值并逐步抬高。
+  for (const h of newHoldings) touchPeak(h, num(h.buyPrice));
 
   saveHoldings(newHoldings);
   return newHoldings;
@@ -1020,7 +1027,18 @@ function mkHolding(code, name, amount, price, type) {
     shares: Math.round((amount / price) * 10000) / 10000,
     costBasis: Math.round(amount * 100) / 100,
     buyDate: new Date().toISOString().split('T')[0],
+    // ★ 移动止盈的基准。原来这个字段从没被写入过, V4 的峰值只能退化成
+    //   max(现价, 买入价) → 回撤恒为 0 → 移动止盈自上线起从未触发过。
+    peakPrice: price,
   };
+}
+
+// 峰值只上不下: 卖出/减仓后仍是这段持有期内的真实高点, 不该被抹掉
+function touchPeak(h, price) {
+  const p = num(price);
+  if (p <= 0) return;
+  const old = num(h.peakPrice);
+  h.peakPrice = Math.round(Math.max(old, p) * 10000) / 10000;
 }
 
 module.exports = {

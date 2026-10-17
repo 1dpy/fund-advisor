@@ -53,12 +53,17 @@ function dateSeries(n, end = new Date()) {
 //   "用户原有缓存"。第二次再备份就变成备份我们自己写的东西, 还原后反而留下垃圾。
 const SEEDED = new Set();
 const SEEDED_BACKUP = new Map();
+// 真实基金代码: 6 位纯数字
+const REAL_FUND_CODE = /^\d{6}$/;
 
 function seedCache(code, navs) {
   if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
   const file = path.join(CACHE_DIR, `${code}.json`);
   const existed = fs.existsSync(file);
-  if (existed && !SEEDED.has(code) && !SEEDED_BACKUP.has(code)) {
+  // 只在"可能是用户真实缓存"时才备份还原: 真实基金代码恒为 6 位纯数字。
+  //   合成代码(P1/TP1/Z0_0…)不可能与用户缓存冲突, 一律走删除。
+  //   否则会出现"上一轮失败留下的残留被本轮当成原有缓存备份 → 越跑越多"。
+  if (existed && REAL_FUND_CODE.test(code) && !SEEDED.has(code) && !SEEDED_BACKUP.has(code)) {
     SEEDED_BACKUP.set(code, fs.readFileSync(file));   // 原样保留字节
   }
   const history = navs.map((nav, i) => ({ date: dateSeries(navs.length)[i], nav }));
@@ -91,13 +96,23 @@ function weakSeries(n = 60, slope = -0.00006, seed = 5) {
 }
 const WEAK = weakSeries();
 
-// 构造一个 fund 条目
+// 构造一个 fund 条目。
+//   ★ 序列末值会被等比缩放到 price: 必须自洽。
+//   历史涨到 1.39 却把 price 写成 1.0, 峰值口径会算出现价从高点回撤 -28%,
+//   移动止盈先把持仓卖掉 → 想测的分支根本走不到。
+//   更隐蔽的坑: 期望"卖出"的断言会被移动止盈误满足, 测试假通过。
+//   等比缩放不改变任何收益率, 所以动量/波动率/ML预测/信号全都不受影响。
 function mkFund(code, navs, price, score = 50) {
-  seedCache(code, navs);
+  const p = price != null ? price : navs[navs.length - 1];
+  const last = navs[navs.length - 1];
+  const scaled = (last > 0 && Math.abs(last - p) > 1e-12)
+    ? navs.map(v => v / last * p)
+    : navs;
+  seedCache(code, scaled);
   return {
     code, name: code + '测试基金C',
-    history: navs.map((nav, i) => ({ date: dateSeries(navs.length)[i], nav })),
-    nav: price, price, score,
+    history: scaled.map((nav, i) => ({ date: dateSeries(scaled.length)[i], nav })),
+    nav: p, price: p, score,
   };
 }
 // 构造一个持仓条目; costBasis/shares/price 共同决定 profitPct
@@ -161,7 +176,7 @@ const spendOf = (r) => moneyOps(r).reduce((s, o) => s + (o.amount || 0), 0);
   //     profitPct 取 0(顺势加仓区间): 加仓已改为"信号强且确实没亏"才加,
   //     不再是越跌越买, 所以这里不能用亏损仓位触发。
   const cost = Math.round((BUDGET - 1500) / 6);
-  const shares = cost; // → profitPct = 0, 落在顺势加仓区间(下界 -3%)
+  const shares = cost; // → profitPct ≈ 0, 落在顺势加仓区间(下界 -3%)
   const funds3 = [], holds3 = [];
   for (let i = 1; i <= 6; i++) {
     funds3.push(mkFund('C' + i, UP, 1.0));
@@ -316,6 +331,48 @@ const spendOf = (r) => moneyOps(r).reduce((s, o) => s + (o.amount || 0), 0);
   if (addK5) {
     ok(`加仓额 ¥${Math.round(addK5.amount)} ≤ 剩余额度 ¥${cap20 - halfCap}`,
       addK5.amount <= cap20 - halfCap + 1);
+  }
+
+  // -------------------------------------------------------------
+  console.log('\n【6.5 移动止盈: 峰值口径修复前是死代码】');
+  // 原实现 peakPrice = holding.peakPrice || max(现价, 买入价), 而 peakPrice
+  // 这个字段全项目从未写入过 →
+  //   现价≥买价 → peak=现价 → drawdownFromPeak 恒为 0
+  //   现价<买价 → peakProfitPct≈0 → 激活条件(涨15%)永不满足
+  // 两条路都到不了卖出分支, "移动止盈"自 V4.1 上线起一次都没触发过。
+  {
+    // 造一段"从 1.00 涨到 1.40 再回落到 1.20"的历史, 买入价 1.00
+    const peakSeq = [];
+    for (let i = 0; i < 30; i++) peakSeq.push(1 + i * (0.40 / 29));   // → 1.40
+    for (let i = 1; i <= 10; i++) peakSeq.push(1.40 - i * 0.02);      // → 1.20
+    const nowPx = peakSeq[peakSeq.length - 1];                        // 1.20
+    // 成本 1000, 现价 1.20 → 浮盈 +20% (过 15% 激活线)
+    //   峰值 1.40 → 从高点回撤 (1.20-1.40)/1.40 = -14.3% ≤ -10% → 应触发
+    r = await run([mkFund('TP1', peakSeq, nowPx)],
+      [mkHolding('TP1', 1000, 1.00, 1000, { currentValue: 1200 })]);
+    const tpSell = r.operations.sells.find(o => o.code === 'TP1');
+    ok('涨40%后回撤14% → 触发移动止盈', !!tpSell);
+    ok('移动止盈理由含"移动止盈"字样', !!tpSell && /移动止盈/.test(tpSell.reason || ''));
+
+    // 反例: 一路涨到顶(回撤 0)不该卖 —— 峰值=现价, drawdownFromPeak=0
+    const upSeq = Array.from({ length: 40 }, (_, i) => 1 + i * 0.01);
+    r = await run([mkFund('TP2', upSeq, upSeq[upSeq.length - 1])],
+      [mkHolding('TP2', 1000, 1.00, 1000)]);
+    ok('仍在创新高时不触发移动止盈', !r.operations.sells.some(o => o.code === 'TP2'));
+
+    // 反例: 没涨过(峰值=买入价)不该卖 —— 激活条件 15% 不满足
+    r = await run([mkFund('TP3', FLAT, 1.0)],
+      [mkHolding('TP3', 1000, 1.0, 1000)]);
+    ok('从未涨过15%时不触发移动止盈', !r.operations.sells.some(o => o.code === 'TP3'));
+
+    // 买入日之前的高点不算自己的峰值: 1.40 出现在建仓之前
+    const beforeSeq = [];
+    for (let i = 0; i < 20; i++) beforeSeq.push(1.40 - i * 0.01);     // 1.40 → 1.21
+    const buyDay = new Date(Date.now() - 15 * 86400000).toISOString().slice(0, 10);
+    r = await run([mkFund('TP4', beforeSeq, beforeSeq[beforeSeq.length - 1])],
+      [mkHolding('TP4', 1000, 1.0, 1000, { buyDate: buyDay })]);
+    ok('建仓前的高点不计入自己的峰值(不误触发)',
+      !r.operations.sells.some(o => o.code === 'TP4'));
   }
 
   // -------------------------------------------------------------

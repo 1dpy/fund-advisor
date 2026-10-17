@@ -12,7 +12,8 @@ process.env.RECENT_SELLS_FILE = require('path').join(
 const assert = require('assert');
 const {
   buildBook, marketValueOf, profitRatio, profitRatioDetailed,
-  annualizedVol, volPositionScale, adaptiveStopLoss, sectorOf, sectorExposure, clamp, num,
+  annualizedVol, volPositionScale, adaptiveStopLoss, peakSince,
+  sectorOf, sectorExposure, clamp, num,
   loadRecentSells, recordStopLossSells, inSellCooldown,
 } = require('../src/portfolio_book');
 const { BUDGET, RISK_CONFIG, WATCHLIST } = require('../src/config');
@@ -217,6 +218,34 @@ ok('空输入不写坏数据', typeof loadRecentSells() === 'object');
 try { require('fs').unlinkSync(tmpSells); } catch (e) {}
 
 // -------------------------------------------------------------
+console.log('\n【6.5 持仓期峰值 peakSince (移动止盈的基准)】');
+// 原实现 holding.peakPrice || max(现价, 买入价), 而 peakPrice 从未被写入过,
+// 于是 drawdownFromPeak 恒为 0 → 移动止盈自 V4.1 起就是死代码。
+{
+  const seq = [
+    { date: '2026-08-01', nav: 1.00 },
+    { date: '2026-08-15', nav: 1.40 },   // ← 峰值
+    { date: '2026-09-01', nav: 1.30 },
+    { date: '2026-09-20', nav: 1.20 },
+  ];
+  near('买入日之后取真实峰值', peakSince(seq, '2026-08-10', 1.0), 1.40, 1e-9);
+  near('建仓前的高点不计入', peakSince(seq, '2026-08-20', 1.0), 1.30, 1e-9);
+  near('无买入日 → 最近一段最高', peakSince(seq, null, 1.0), 1.40, 1e-9);
+  near('空历史 → 退化为 fallback', peakSince([], '2026-08-10', 1.0), 1.0, 1e-9);
+  // 买入日在未来(脏数据/时区问题) → 筛不到区间, 退化为最近一段最高价,
+  //   比直接退回买入价更贴近现实, 也不会因为一条脏日期就完全失去峰值保护
+  near('买入日之后无数据 → 退化为最近一段最高', peakSince(seq, '2027-01-01', 1.05), 1.40, 1e-9);
+  near('nav 字段缺失时读 close',
+    peakSince([{ date: '2026-08-01', close: 2.5 }], '2026-07-01', 1), 2.5, 1e-9);
+  ok('脏点(nav<=0/NaN)被忽略',
+    peakSince([{ date: '2026-08-01', nav: -1 }, { date: '2026-08-02', nav: 0 },
+      { date: '2026-08-03', nav: Number.NaN }, { date: '2026-08-04', nav: 1.8 }],
+      '2026-07-01', 1.0) === 1.8);
+  near('等比缩放后峰值同比缩放',
+    peakSince(seq.map(r => ({ ...r, nav: r.nav * 2 })), '2026-08-10', 1.0), 2.80, 1e-9);
+}
+
+// ---------------------------------------------------------------
 console.log('\n【7. 数值工具】');
 eq('num 正常', num('3.5'), 3.5);
 eq('num(NaN) → 0', num('abc'), 0);

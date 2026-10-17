@@ -157,20 +157,92 @@ function detectMarketRegime(portfolio) {
 // ============================================================
 // 4. 配置偏离检查
 // ============================================================
+/**
+ * 归一化目标权重, 保证 Σ = 1
+ *
+ * 为什么要: `drift = 实际 - 目标` 直接驱动 generateUltimateAdvice 里的
+ *   补成长(454) / 补防御(490) / 部署现金(552) 等真金白银的操作。
+ *   目标权重之和若 ≠1, sum(drift) 就恒等于 1-Σtarget,
+ *   熊市下所有品类被系统性抬高 → 该补的补不了、该部署的部署不出去。
+ *
+ * 实测 PROFIT_FIRST + BEAR: 0.30+0.05+0.18+0.25+0.08 = 0.86,
+ *   缺口 0.14 → 每个品类的 drift 平均虚高 0.028, 而补仓阈值正是 0.05。
+ *
+ * 做法: 先套硬上下限, 超额则按比例压缩(不动下限), 不足则按优先级填充。
+ *   填充顺序默认 global → defense → growth → value:
+ *   优先让钱继续留在有弹性的全球(QDII)上, 再补防御, 最后才是成长/价值。
+ *
+ * @param {Object} target 原始目标
+ * @param {Object} opts {caps, floors, fillOrder}
+ */
+const ALLOC_KEYS = ['growth', 'value', 'defense', 'global', 'cash'];
+function normalizeAllocation(target, opts = {}) {
+  const caps = opts.caps || {};
+  const floors = opts.floors || {};
+  const fillOrder = opts.fillOrder || ['global', 'defense', 'growth', 'value'];
+  const t = {};
+  for (const k of ALLOC_KEYS) t[k] = Math.max(0, Number(target?.[k]) || 0);
+
+  for (const k of ALLOC_KEYS) {
+    if (caps[k] != null) t[k] = Math.min(t[k], caps[k]);
+    if (floors[k] != null) t[k] = Math.max(t[k], floors[k]);
+  }
+
+  const sum = ALLOC_KEYS.reduce((s, k) => s + t[k], 0);
+  if (sum > 1 + 1e-9) {
+    // 超额: 按比例压缩可压缩的部分(下限以下不动)
+    const excess = sum - 1;
+    let flexible = 0;
+    for (const k of ALLOC_KEYS) {
+      flexible += floors[k] != null ? Math.max(0, t[k] - floors[k]) : t[k];
+    }
+    if (flexible > 0) {
+      for (const k of ALLOC_KEYS) {
+        const room = floors[k] != null ? Math.max(0, t[k] - floors[k]) : t[k];
+        t[k] -= excess * (room / flexible);
+      }
+    }
+  } else if (sum < 1 - 1e-9) {
+    // 不足: 按优先级填充到各自硬上限
+    let gap = 1 - sum;
+    for (const k of fillOrder) {
+      if (gap <= 1e-9) break;
+      const cap = caps[k] != null ? caps[k] : 1;
+      const room = Math.max(0, cap - t[k]);
+      const add = Math.min(gap, room);
+      t[k] += add;
+      gap -= add;
+    }
+    if (gap > 1e-9) t.cash += gap;   // 实在没处去 = 闲置弹药
+  }
+  return t;
+}
+
 function checkAllocationDrift(portfolio, regime, strategy) {
   const cfg = strategy || STRATEGY_CONFIG[STRATEGY] || STRATEGY_CONFIG.CONSERVATIVE;
   const target = { ...(cfg.strategicAllocation || RISK_CONFIG.strategicAllocation) };
 
   // 根据体制调整目标: 熊市/弱震荡降低成长, 增加防御和现金
   // 赚钱优先模式下: 熊市回调恰恰是分批建仓机会, 故只微调、不大幅砍成长
+  let caps = null;
   if (regime === 'BEAR' || regime === 'WEAK_SIDEWAYS') {
-    if (STRATEGY === 'PROFIT_FIRST') {
+    // ★ 用解析后的 cfg 判断, 不能用模块级 STRATEGY 常量:
+    //   显式传入 strategy 参数时(如 CONSERVATIVE), 常量还是 PROFIT_FIRST,
+    //   会走错分支 → 传入的保守策略在熊市下被按"赚钱优先"配
+    const isProfitFirst = cfg === STRATEGY_CONFIG.PROFIT_FIRST;
+    if (isProfitFirst) {
       // 赚钱优先: 回调即分批建仓, 且用户偏好高弹性赛道(不爱宽基), 故不抬升 value(宽基)
       target.growth = Math.min(target.growth, 0.30);
       target.value = Math.max(target.value, 0.05);   // 不补宽基, 保持低
       target.defense = Math.max(target.defense, 0.18);
       target.global = Math.min(target.global, 0.27);
       target.cash = cfg.cashTarget != null ? cfg.cashTarget : 0.08;
+      // 上面这套约束互相打架, 加起来只有 0.86 —— 必须归一化
+      caps = {
+        growth: 0.30,   // 熊市降成长是这条分支的初衷, 不得回补
+        global: 0.27,
+        value: 0.10,    // 用户不爱宽基, 不让缺口把 value 灌大
+      };
     } else {
       target.growth = 0.20;
       target.value = 0.30;
@@ -180,12 +252,18 @@ function checkAllocationDrift(portfolio, regime, strategy) {
     }
   }
 
+  // 归一化: Σ 必须 = 1, 否则 drift 被系统性抬高
+  const normalized = normalizeAllocation(target, caps ? {
+    caps,
+    floors: { defense: 0.18, cash: target.cash },
+  } : {});
+
   const drift = {};
-  for (const k of Object.keys(target)) {
-    drift[k] = portfolio.sectorWeights[k] - target[k];
+  for (const k of Object.keys(normalized)) {
+    drift[k] = portfolio.sectorWeights[k] - normalized[k];
   }
 
-  return { target, drift };
+  return { target: normalized, drift };
 }
 
 // 从用户偏好赛道池挑选应部署的赛道基金
@@ -646,6 +724,7 @@ module.exports = {
   analyzePortfolio,
   detectMarketRegime,
   checkAllocationDrift,
+  normalizeAllocation,
   // 下列为纯函数决策点, 导出供 test/strategy_selection.test.js 直接覆盖
   //   (选基/仓位/费率/分类是策略语义的核心, 不测则改坏了没人知道)
   generateUltimateAdvice,

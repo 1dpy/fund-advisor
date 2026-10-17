@@ -39,6 +39,7 @@ function daysAgo(n) {
 function D(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d, 10, 0, 0); }
 
 const PF = STRATEGY_CONFIG.PROFIT_FIRST;
+const CS = STRATEGY_CONFIG.CONSERVATIVE;
 const CONS = STRATEGY_CONFIG.CONSERVATIVE;
 
 console.log('== 策略核心单测 (选基/仓位/止盈止损/费率/交易日) ==\n');
@@ -141,22 +142,44 @@ ok('熊市: 成长降到 ≤30%', alBear.target.growth <= 0.30);
 ok('熊市: 防御抬到 ≥18%', alBear.target.defense >= 0.18);
 ok('熊市: 全球 ≤27%', alBear.target.global <= 0.27);
 ok('熊市: 现金 ≥8%', alBear.target.cash >= 0.08);
-// 目标权重不得超额配置(>100%)
+// 目标权重必须精确归一化: Σ(target) 不为 1 时, Σ(drift) 恒等于 1-Σ(target),
+//   熊市下每个品类都被判定为"超配" → 补仓/减仓指令系统性偏移。
 const bearSum = Object.values(alBear.target).reduce((s, v) => s + v, 0);
-ok('熊市目标之和 ≤1 (不超额配置)', bearSum <= 1 + 1e-9);
-if (Math.abs(bearSum - 1) > 0.01) {
-  console.log(`   ⚠️ 已知问题(待用户定夺): 熊市目标之和 = ${bearSum.toFixed(2)}, 缺口 ${(1 - bearSum).toFixed(2)};` +
-    ` 未归一化 → sum(drift) 恒为 +${(1 - bearSum).toFixed(2)}, 熊市下 drift 被系统性抬高(更倾向"超配"判定)`);
-}
+near('熊市目标之和 = 1 (已归一化)', bearSum, 1, 1e-9);
+// 归一化后不得破坏该分支的初衷约束
+ok('熊市归一化后仍 growth ≤ 0.30', alBear.target.growth <= 0.30 + 1e-9);
+ok('熊市归一化后仍 global ≤ 0.27', alBear.target.global <= 0.27 + 1e-9);
+ok('熊市归一化后仍 defense ≥ 0.18', alBear.target.defense >= 0.18 - 1e-9);
+ok('熊市归一化后仍 cash ≥ 0.08', alBear.target.cash >= 0.08 - 1e-9);
+ok('缺口不灌给 value (用户不爱宽基)', alBear.target.value <= 0.10 + 1e-9);
+
+// 实际权重之和为 1 时, drift 之和必须为 0 —— 这是归一化的直接推论,
+//   Σ(drift) ≠ 0 说明"每个品类都超配", 逻辑上不可能
+const bearDriftSum = Object.values(alBear.drift).reduce((s, v) => s + v, 0);
+near('熊市 drift 之和 = 0 (不系统性偏移)', bearDriftSum, 0, 1e-9);
+
 const normSum = Object.values(al.target).reduce((s, v) => s + v, 0);
 near('常态目标之和 = 1', normSum, 1, 1e-9);
 const alWeak = A.checkAllocationDrift(pa, 'WEAK_SIDEWAYS', PF);
 ok('弱震荡同样降成长', alWeak.target.growth <= 0.30);
-// 显式传 strategy 时以传入为准
+near('弱震荡目标之和 = 1', Object.values(alWeak.target).reduce((s, v) => s + v, 0), 1, 1e-9);
+
+// 显式传 strategy 时以传入为准 —— 注意: 熊市下的体制分支也必须跟着传入的
+//   策略走, 不能读模块级 STRATEGY 常量(历史 bug: 传 CONSERVATIVE 却按
+//   PROFIT_FIRST 配, 保守策略在熊市被配成 growth 0.30 / value 0.05)
 const alCustom = A.checkAllocationDrift(pa, 'SIDEWAYS', {
   strategicAllocation: { growth: 0.4, value: 0.2, defense: 0.2, global: 0.1, cash: 0.1 },
 });
 eq('自定义 strategy 生效', alCustom.target.growth, 0.4);
+
+const alBearCs = A.checkAllocationDrift(pa, 'BEAR', CS);
+near('熊市 CONSERVATIVE: growth', alBearCs.target.growth, 0.20, 1e-9);
+near('熊市 CONSERVATIVE: value', alBearCs.target.value, 0.30, 1e-9);
+near('熊市 CONSERVATIVE: defense', alBearCs.target.defense, 0.25, 1e-9);
+near('熊市 CONSERVATIVE: global', alBearCs.target.global, 0.15, 1e-9);
+near('熊市 CONSERVATIVE: cash', alBearCs.target.cash, 0.10, 1e-9);
+ok('熊市 CONSERVATIVE 与 PROFIT_FIRST 确实是两套配置',
+  Math.abs(alBearCs.target.value - alBear.target.value) > 0.1);
 
 // ---------------------------------------------------------------
 console.log('\n【6. 赎回费闸门 holdingDays / redemptionFeeRate】');

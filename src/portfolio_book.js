@@ -189,6 +189,48 @@ function adaptiveStopLoss(history, base = -0.08) {
   return clamp(base * scale, -0.15, -0.04);
 }
 
+/**
+ * 持仓期间的最高净值 —— 移动止盈的基准。
+ *
+ * 为什么必须专门算: 原实现 `holding.peakPrice || Math.max(现价, 买入价)`,
+ * 而 peakPrice 这个字段全项目从没被写入过(持仓文件里根本没有), 于是:
+ *   现价 ≥ 买入价 → peak = 现价 → 回撤恒为 0
+ *   现价 < 买入价 → peakProfit ≈ 0 → 激活条件(涨15%)永不满足
+ * 两条路都走不到卖出分支 → V4.1 的"移动止盈"自上线起就是死代码,
+ * 涨上去的利润一次都没被移动止盈保住过。
+ *
+ * 取数优先级:
+ *   1. 有买入日  → 该日之后(含)的历史最高净值
+ *   2. 无买入日  → 最近 lookback 条的历史最高净值
+ *   3. 都没有    → fallback(买入价/现价), 与旧行为一致, 不会突然开始乱卖
+ *
+ * @returns {number} >0 的峰值; 全失败返回 0 由调用方兜底
+ */
+function peakSince(history, sinceDate, fallback = 0, lookback = 60) {
+  const arr = Array.isArray(history) ? history : [];
+  let peak = 0;
+
+  const since = sinceDate ? String(sinceDate).slice(0, 10) : '';
+  if (since) {
+    for (const r of arr) {
+      const d = r && r.date ? String(r.date).slice(0, 10) : '';
+      if (!d || d < since) continue;              // 买入日之前的涨幅不算自己的
+      const v = num(r.nav != null ? r.nav : r.close);
+      if (v > 0 && v > peak) peak = v;
+    }
+  }
+  // 买入日缺失或该区间无数据: 退化为最近一段的最高价
+  if (peak <= 0 && arr.length > 0) {
+    const tail = arr.slice(-Math.max(1, lookback));
+    for (const r of tail) {
+      const v = num(r && (r.nav != null ? r.nav : r.close));
+      if (v > 0 && v > peak) peak = v;
+    }
+  }
+  if (peak <= 0) peak = num(fallback);
+  return peak;
+}
+
 // 赛道反查表: code → 赛道名。WATCHLIST 是唯一的赛道权威来源。
 const SECTOR_BY_CODE = (() => {
   const m = new Map();
@@ -289,6 +331,7 @@ module.exports = {
   annualizedVol,
   volPositionScale,
   adaptiveStopLoss,
+  peakSince,
   sectorOf,
   sectorExposure,
   loadRecentSells,
