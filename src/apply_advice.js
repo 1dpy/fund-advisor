@@ -103,14 +103,21 @@ function unitValue(h) {
   return bp > 0 ? bp : 0;
 }
 
+// 净值缓存目录。NAV_CACHE_DIR 供测试隔离(见 data_collector 同款处理):
+//   测试播种的假净值不该写进用户真实的 data_cache/
+function navCacheDir() {
+  return process.env.NAV_CACHE_DIR
+    ? path.resolve(process.env.NAV_CACHE_DIR)
+    : path.join(ROOT, 'data_cache');
+}
+
 /**
  * 从本地净值缓存取最新净值(同步, 离线)。
- * V5/V6 的操作指令只带 amount 不带净值, 而份额 = 金额/净值。
  * 本流程本就会给候选基金抓历史净值, 所以缓存基本都有。
  */
 function lookupNav(code) {
   try {
-    const f = path.join(ROOT, 'data_cache', `${code}.json`);
+    const f = path.join(navCacheDir(), `${code}.json`);
     if (!fs.existsSync(f)) return 0;
     const j = JSON.parse(fs.readFileSync(f, 'utf8'));
     const arr = Array.isArray(j) ? j : (j.history || []);

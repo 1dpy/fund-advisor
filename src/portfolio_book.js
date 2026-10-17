@@ -107,34 +107,54 @@ function buildBook(holdings, budget) {
  * @param {string=} source 出参: 返回实际采用的口径, 便于审计与告警
  */
 function profitRatio(holding, currentPrice) {
-  if (!holding) return 0;
-  const cost = num(holding.costBasis);
-  if (cost <= 0) return 0;
-
-  const sh = num(holding.shares);
-  const px = num(currentPrice);
-  if (sh > 0 && px > 0) return (sh * px - cost) / cost;
-
-  const mv = num(holding.currentValue);
-  if (mv > 0) return (mv - cost) / cost;
-
-  const hr = num(holding.holdingReturnPct);
-  if (hr !== 0) return hr;
-
-  return 0;
+  return profitRatioDetailed(holding, currentPrice).ratio;
 }
 
-/** 返回 {ratio, source} 版本, 供需要区分口径的场景(如告警)使用 */
+/**
+ * 份额口径与市值口径的允许偏差。超过就认为 shares 不可信。
+ *
+ * 为什么必须有这道校验: holdings.json 是手工维护的, shares 经常被写成
+ * 占位值 1(实盘四只全是 1)。此时 shares×现价/成本 会算出 -99%:
+ *   021277: 1 × 6.3463 / 1564.38 - 1 = -99.59%   真实 -3.40%(APP报1511.25)
+ *   019018: 1 × 8.4170 / 464.64  - 1 = -98.19%   真实 -13.97%(APP报399.73)
+ * 三只全部"击穿止损" —— 引擎会把整个组合清仓。而 shares>0 的判据对
+ * 占位值 1 完全无效, 光靠 fallback 链挡不住, 必须做交叉校验。
+ */
+const SHARES_TRUST_DEVIATION = 0.5;
+
+/**
+ * 盈亏率, 返回 {ratio, source} 供需要区分口径的场景(如告警文案)使用。
+ *
+ * 口径优先级:
+ *   1. shares × 现价   —— 最实时, 但前提是 shares 可信
+ *   2. currentValue    —— APP 直接报的市值, 权威但可能陈旧
+ *   两者同时存在时交叉校验: 份额×现价 应 ≈ 市值, 偏离过大就用市值口径。
+ */
 function profitRatioDetailed(holding, currentPrice) {
   const cost = num(holding?.costBasis);
   if (!holding || cost <= 0) return { ratio: 0, source: 'none' };
 
   const sh = num(holding.shares);
   const px = num(currentPrice);
-  if (sh > 0 && px > 0) return { ratio: (sh * px - cost) / cost, source: 'shares' };
-
   const mv = num(holding.currentValue);
-  if (mv > 0) return { ratio: (mv - cost) / cost, source: 'marketValue' };
+
+  const byShares = (sh > 0 && px > 0) ? (sh * px - cost) / cost : null;
+  const byValue = (mv > 0) ? (mv - cost) / cost : null;
+
+  if (byShares !== null && byValue !== null) {
+    const implied = sh * px;
+    const deviate = Math.abs(implied - mv) / Math.max(mv, 1e-9);
+    if (deviate <= SHARES_TRUST_DEVIATION) {
+      return { ratio: byShares, source: 'shares' };
+    }
+    // shares 与市值对不上 → 大概率是占位值, 采信市值并在口径里标注
+    return {
+      ratio: byValue,
+      source: `marketValue(份额口径偏离${(deviate * 100).toFixed(0)}%,疑似占位值)`,
+    };
+  }
+  if (byShares !== null) return { ratio: byShares, source: 'shares' };
+  if (byValue !== null) return { ratio: byValue, source: 'marketValue' };
 
   const hr = num(holding.holdingReturnPct);
   if (hr !== 0) return { ratio: hr, source: 'recorded' };

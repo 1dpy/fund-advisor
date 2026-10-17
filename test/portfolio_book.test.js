@@ -104,6 +104,43 @@ const deepLoss = { costBasis: 1000, shares: 0, currentValue: 900 };
 ok('份额缺失时仍能算出 -10% 浮亏', profitRatio(deepLoss, 0) <= -0.08);
 
 // -------------------------------------------------------------
+console.log('\n【2.5 份额口径 vs 市值口径的交叉校验 (实盘踩过的坑)】');
+// holdings.json 是手工维护的, shares 经常被写成占位值 1。实盘四只全是 1:
+//   021277: 1 × 6.3463 / 1564.38 - 1 = -99.59%   真实 -3.40% (APP报1511.25)
+//   019018: 1 × 8.4170 / 464.64  - 1 = -98.19%   真实 -13.97%(APP报399.73)
+// 三只全部"击穿止损" → 引擎会把整个组合清仓。而 shares>0 的判据对占位值 1
+// 完全无效, 光靠 fallback 链挡不住, 必须做交叉校验。
+{
+  const real = { code: '021277', shares: 1, buyPrice: 1564.38, costBasis: 1564.38, currentValue: 1511.25, holdingReturnPct: -0.034 };
+  const d = profitRatioDetailed(real, 6.3463);
+  near('占位值 shares=1 → 采信市值口径', d.ratio, 1511.25 / 1564.38 - 1, 1e-9);
+  ok('口径被标注为疑似占位值', /占位值/.test(d.source));
+  near('且结果与 APP 报的 holdingReturnPct 吻合', d.ratio, -0.034, 0.001);
+
+  // 深亏那只要能正确击穿止损(修复前 -98% 会误杀, 修复后 -13.97% 才是真的)
+  const deep = { code: '019018', shares: 1, costBasis: 464.64, currentValue: 399.73, holdingReturnPct: -0.1397 };
+  near('019018 实盘浮亏 = -13.97%', profitRatio(deep, 8.4170), -0.1397, 0.001);
+  ok('确实击穿 -8% 止损线', profitRatio(deep, 8.4170) < -0.08);
+
+  // 份额真实时仍走份额口径(更实时)
+  const good = { code: 'X', shares: 1000, costBasis: 1000, currentValue: 1005 };
+  const dg = profitRatioDetailed(good, 1.02);
+  eq('份额可信 → 用份额口径', dg.source, 'shares');
+  near('份额口径结果', dg.ratio, 0.02, 1e-9);
+
+  // 偏差在容忍范围内(≤50%)仍采信份额
+  const near50 = { code: 'Y', shares: 1000, costBasis: 1000, currentValue: 700 };
+  eq('偏差 30% 内仍采信份额', profitRatioDetailed(near50, 0.91).source, 'shares');
+
+  // 只有 currentValue 没有可用份额 → 市值口径
+  eq('无份额 → 市值口径',
+    profitRatioDetailed({ costBasis: 1000, currentValue: 800 }, 0).source, 'marketValue');
+  // 都没有 → 落到记录值
+  eq('都没有 → 记录值口径',
+    profitRatioDetailed({ costBasis: 1000, holdingReturnPct: -0.05 }, 0).source, 'recorded');
+}
+
+// ---------------------------------------------------------------
 console.log('\n【3. 波动率与自适应止损】');
 
 function mkHist(n, vol, seed = 7) {

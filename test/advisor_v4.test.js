@@ -8,6 +8,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // ★ 冷却期记录会写文件, 必须在 require advisor_v4 之前把路径指到临时目录,
 //   否则会把测试数据写进用户真实的 data/recent_sells.json
@@ -25,7 +26,12 @@ function eq(name, actual, expect) {
   console.log('  ✅ ' + name); pass++;
 }
 
-const CACHE_DIR = path.join(__dirname, '..', 'data_cache');
+// ★ 测试缓存隔离: 一律写到系统临时目录, 绝不碰用户真实的 data_cache/
+//   (属性测试一轮要造 400+ 个假基金文件, 靠末尾清理兜不住 —— 中途失败、
+//   Ctrl-C、或删除被环境策略拦截都会留下几百个假净值, 会被 getCachedHistory
+//   当成真实数据读走)
+const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'navcache-'));
+process.env.NAV_CACHE_DIR = CACHE_DIR;
 function today() { return new Date().toISOString().slice(0, 10); }
 
 // 预置缓存: lastDate = 今天 → getCachedHistory 直接返回, 不触发网络
@@ -316,16 +322,21 @@ const spendOf = (r) => moneyOps(r).reduce((s, o) => s + (o.amount || 0), 0);
     !r.operations.addPositions.some(o => o.code === 'K3'));
 
   // 6.4 单只总仓位上限: 已到 20% 上限的不得再加
+  // 6.5 单只总仓位上限: 已到 20% 上限的不得再加
   const cap20 = Math.round(BUDGET * RISK_CONFIG.maxSinglePosition);
   r = await run([mkFund('K4', UP, 1.0)],
     [mkHolding('K4', 1000, 1.0, 1000, { currentValue: cap20 })]);
   ok(`单只已达上限 ¥${cap20} 不加仓`,
     !r.operations.addPositions.some(o => o.code === 'K4'));
 
-  // 6.5 加仓后不得突破单只上限 (部分仓位 → 只加到上限为止)
+  // 6.6 加仓后不得突破单只上限 (半仓 → 可以加, 但要留到上限为止)
+  //     ★ 构造必须自洽: shares×现价 要等于 currentValue, 否则会被
+  //       "份额口径 vs 市值口径"交叉校验判成占位值而改用市值口径。
+  //       早期版本这里 shares=1000/currentValue=550, 等于凭空亏 45%,
+  //       深亏本来就不该加仓, 断言测的不是它想测的东西。
   const halfCap = Math.round(cap20 * 0.5);
   r = await run([mkFund('K5', UP, 1.0)],
-    [mkHolding('K5', 1000, 1.0, 1000, { currentValue: halfCap })]);
+    [mkHolding('K5', halfCap, 1.0, halfCap, { currentValue: halfCap })]);
   const addK5 = r.operations.addPositions.find(o => o.code === 'K5');
   ok(`半仓(¥${halfCap})可加仓`, !!addK5);
   if (addK5) {

@@ -15,11 +15,17 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const { generateAdviceV4 } = require('../src/advisor_v4');
 const { BUDGET } = require('../src/config');
 
-const CACHE_DIR = path.join(__dirname, '..', 'data_cache');
+// ★ 测试缓存隔离: 一律写到系统临时目录, 绝不碰用户真实的 data_cache/
+//   (属性测试一轮要造 400+ 个假基金文件, 靠末尾清理兜不住 —— 中途失败、
+//   Ctrl-C、或删除被环境策略拦截都会留下几百个假净值, 会被 getCachedHistory
+//   当成真实数据读走)
+const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'navcache-'));
+process.env.NAV_CACHE_DIR = CACHE_DIR;
 // 60 组 ≈ 80s: 每组最多 8 只基金, 每只都要训一次 LSTM-Attention,
 // 加到 120 组要跑近 3 分钟, CI 里不划算。想加量就改这里。
 const CASES = 60;

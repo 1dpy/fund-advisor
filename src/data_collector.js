@@ -16,7 +16,12 @@ const path = require('path');
 const { fetchFundHistory } = require('./fetcher');
 const { assessFreshness } = require('./data_freshness');
 
-const CACHE_DIR = path.join(__dirname, '..', 'data_cache');
+// NAV_CACHE_DIR 供测试隔离: 测试播种的假净值不该写进用户真实的 data_cache/
+//   (此前属性测试一轮要造 400+ 个假基金文件, 清理不及时就被 getCachedHistory
+//   当成真实净值读走 = 脏数据混进决策)
+const CACHE_DIR = process.env.NAV_CACHE_DIR
+  ? path.resolve(process.env.NAV_CACHE_DIR)
+  : path.join(__dirname, '..', 'data_cache');
 const HISTORY_DAYS = 500; // 约2年交易日
 
 if (!fs.existsSync(CACHE_DIR)) {

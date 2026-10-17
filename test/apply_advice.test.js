@@ -20,6 +20,8 @@ const HOLDINGS = path.join(TMP, 'holdings.json');
 //     不隔离的话 backupHoldings 只保留最近 5 份, 一轮测试就会把用户真实的
 //     holdings.applybak.* 全顶掉, 而且顶上去的还是测试数据。
 process.env.HOLDINGS_FILE = HOLDINGS;
+// ★ 净值缓存也隔离到临时目录, 不碰用户真实的 data_cache/
+process.env.NAV_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'navcache-'));
 process.env.APPLY_ARTIFACT_DIR = TMP;
 
 let passed = 0;
@@ -35,7 +37,8 @@ function get(code) { return readHoldings().find(h => h.code === code); }
 
 /** 预置本地净值缓存, 供 lookupNav 取份额折算用的净值 */
 function seedNavCache(code, nav) {
-  const dir = path.join(ROOT, 'data_cache');
+  // 走 NAV_CACHE_DIR(本文件已把它指到临时目录), 不写用户真实的 data_cache/
+  const dir = process.env.NAV_CACHE_DIR || path.join(ROOT, 'data_cache');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const f = path.join(dir, `${code}.json`);
   const existed = fs.existsSync(f);
